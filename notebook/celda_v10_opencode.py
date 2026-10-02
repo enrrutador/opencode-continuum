@@ -217,6 +217,10 @@ def _upd(s):
 sessions = sorted(sessions, key=_upd, reverse=True)
 
 
+# Una sola puerta de entrada: la sesión más recientemente activa
+# ("tal cual como la dejaste"). El resto del historial queda visible
+# dentro de la web; imprimir un link por sesión solo genera caos y
+# links duplicados en el teléfono.
 links = []
 for s in sessions[:8]:
     sid = s.get("id")
@@ -227,36 +231,46 @@ for s in sessions[:8]:
         "title": s.get("title") or sid,
         "url": f"{base_url}/{ws_b64}/session/{sid}",
     })
+latest = links[0] if links else None
+if latest:
+    OPEN_URL = latest["url"]
+    OPEN_TITLE = latest["title"]
+else:
+    OPEN_URL = SESSION_URL
+    OPEN_TITLE = "(nueva conversación)"
 
 
-# guardar links
+# guardar link único
 out = Path("/kaggle/working/opencode_cloud/OPEN_THIS_URL.txt")
-lines = [SESSION_URL, ""]
-for L in links:
-    lines.append(f"{L['title']}: {L['url']}")
+lines = [
+    OPEN_URL,
+    "",
+    f"sesion: {OPEN_TITLE}",
+    f"proyecto: {PROJECT_URL}",
+    f"recovery: {recovery}",
+    f"sesiones_en_historial: {len(links)} (visibles en la web)",
+]
 out.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 log("")
 log("######## COPIÁ PEGÁ (una sola línea) ########")
-print(SESSION_URL, flush=True)
+print(OPEN_URL, flush=True)
 log("#############################################")
-if links:
-    log("\nSesiones existentes (copiá el link completo):")
-    for L in links:
-        log(f"  - {L['title']}")
-        print(L["url"], flush=True)
-else:
-    log("No hay sesiones aún. Abrí SESSION_URL, escribí un mensaje.")
+log(f"Sesión: {OPEN_TITLE}")
+if len(links) > 1:
+    log(f"Historial: {len(links)} sesiones (las ves dentro de la web).")
+if not links:
+    log("No hay sesiones aún. Abrí el link, escribí un mensaje.")
 log("")
 log("NO uses /new-session ni la raíz del túnel.")
 log("Workspace:", WORKSPACE)
 log("Recovery:", recovery)
-log("Links también en:", out)
+log("Link también en:", out)
 log("Fin.")
 
 
-OPEN_CODE_URL = SESSION_URL
+OPEN_CODE_URL = OPEN_URL
 OPEN_CODE_PROJECT_URL = PROJECT_URL
 OPEN_CODE_SESSIONS = links
 WORKSTATION_RESULT = info
