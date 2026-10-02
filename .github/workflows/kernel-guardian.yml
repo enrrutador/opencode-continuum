@@ -1,0 +1,32 @@
+name: kernel-guardian
+
+# External watchdog: if the Kaggle session died, relaunch it via the API.
+# The in-kernel Watchdog can only restart the OpenCode process while the
+# kernel is alive; this workflow covers the "kernel itself is dead" case.
+on:
+  schedule:
+    - cron: "*/15 * * * *" # every 15 minutes
+  workflow_dispatch: {} # manual run from the Actions tab
+
+concurrency:
+  group: kernel-guardian
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install kaggle
+        env:
+          PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      - name: Check kernel and relaunch if dead
+        run: python scripts/guardian/guardian.py
+        env:
+          KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
+          KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
+          KAGGLE_KERNEL: ${{ secrets.KAGGLE_KERNEL }}
+          GUARDIAN_URL: ${{ secrets.GUARDIAN_URL }}

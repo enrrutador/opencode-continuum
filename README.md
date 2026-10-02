@@ -393,6 +393,18 @@ ruff check src/
 | Puerto local; acceso vía Jupyter Proxy | URL de sesión; regenerar en cada runtime |
 | Watchdog muere con el runtime | Continuidad = bootstrap + Dataset en el siguiente kernel |
 
+## Reinicio automático (dos niveles)
+
+| Nivel | Dónde vive | Qué cubre |
+|---|---|---|
+| Watchdog interno | dentro del kernel | reinicia el proceso OpenCode si muere con kernel vivo |
+| Guardián externo | fuera de Kaggle (GitHub Actions o tu PC) | relanza el kernel cuando la sesión misma muere |
+| Celda keep-alive | última celda del cuaderno | mantiene la sesión ejecutando; si OpenCode no se recupera en ~5 min, termina para que el guardián relance |
+
+Nada dentro de Kaggle puede revivir a Kaggle: sin el guardián externo hay
+que arrancar el cuaderno a mano. Detalles y setup en
+[`scripts/guardian/README.md`](scripts/guardian/README.md).
+
 ---
 
 ## Licencia
