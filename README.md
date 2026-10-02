@@ -405,6 +405,21 @@ Nada dentro de Kaggle puede revivir a Kaggle: sin el guardián externo hay
 que arrancar el cuaderno a mano. Detalles y setup en
 [`scripts/guardian/README.md`](scripts/guardian/README.md).
 
+## Uso desde el teléfono
+
+Bloquear el teléfono, cerrar el navegador o perder señal **no mata la
+sesión**: el kernel corre en los servidores de Kaggle, no en tu teléfono.
+
+1. Configurá el **túnel nombrado** (`CLOUDFLARE_TUNNEL_TOKEN` en Secrets):
+   el hostname es fijo y sobrevive a muertes y relanzamientos del kernel.
+   Guardalo como bookmark; con quick tunnel la URL cambia en cada arranque
+   y al volver encontrarías una URL muerta.
+2. Trabajás, bloqueás, volvés cuando quieras y recargás el bookmark.
+3. Si al volver no responde, **no toques el cuaderno**: el guardián puede
+   estar relanzando el kernel (ventana de ~20-40 min). Esperá unos minutos
+   y recargá. El trabajo se restaura del último checkpoint (≤ 15 min atrás).
+4. Poné `OPENCODE_SERVER_PASSWORD`: esa URL es pública.
+
 ---
 
 ## Licencia
