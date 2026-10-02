@@ -11,8 +11,9 @@ Actions cron, a PC, a phone with Termux) and presses "Run" for you:
   2. Otherwise asks the Kaggle API (`kaggle kernels status`) whether the
      kernel session is running.
   3. If the session is dead AND its last run started long enough ago
-     (a fresh push needs time to boot; a kernel that dies minutes after
-     starting is crash-looping and must NOT be relaunched blindly),
+     (a fresh push needs ~10-15 min to boot: pip install, Dataset restore,
+     OpenCode start; a kernel that dies minutes after starting is
+     crash-looping and must NOT be relaunched blindly),
      re-runs the notebook with `kaggle kernels push -p <dir>`.
      The notebook under <dir> must be self-booting (see kaggle/).
 
@@ -27,7 +28,8 @@ Environment:
                            (default: <repo>/kaggle when run from the repo).
   GUARDIAN_URL             optional stable URL to probe first (named tunnel).
   GUARDIAN_MIN_START_AGE   seconds since last run start before a repush is
-                           allowed (default 2700 = 45 min).
+                           allowed (default 1200 = 20 min: covers a normal
+                           ~10-15 min boot with margin).
   GUARDIAN_ALLOW_UNKNOWN_TIME  if "1", push when dead but last-run time is
                            unknown (default "0" = hold, exit 3).
   GUARDIAN_DRY_RUN         if "1", print what would be done, change nothing.
@@ -66,7 +68,7 @@ class GuardianConfig:
     kernel: str
     push_dir: str
     url: str = ""
-    min_start_age: int = 2700
+    min_start_age: int = 1200
     allow_unknown_time: bool = False
     dry_run: bool = False
     timeout: str = ""
@@ -80,7 +82,7 @@ class GuardianConfig:
             kernel=kernel,
             push_dir=os.environ.get("GUARDIAN_PUSH_DIR", default_push_dir),
             url=os.environ.get("GUARDIAN_URL", "").strip(),
-            min_start_age=int(os.environ.get("GUARDIAN_MIN_START_AGE", "2700")),
+            min_start_age=int(os.environ.get("GUARDIAN_MIN_START_AGE", "1200")),
             allow_unknown_time=os.environ.get("GUARDIAN_ALLOW_UNKNOWN_TIME") == "1",
             dry_run=os.environ.get("GUARDIAN_DRY_RUN") == "1",
             timeout=os.environ.get("GUARDIAN_TIMEOUT", "").strip(),

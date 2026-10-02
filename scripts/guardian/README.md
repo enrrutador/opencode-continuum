@@ -12,7 +12,8 @@ mano: detectar la sesión muerta y volver a correr el cuaderno vía API.
    nombrado de Cloudflare), la prueba primero: si responde, todo está vivo.
 2. Si no, pregunta a la API (`kaggle kernels status owner/slug`).
 3. Si la sesión está muerta **y** su última corrida empezó hace más de
-   `GUARDIAN_MIN_START_AGE` (default 45 min), relanza con
+   `GUARDIAN_MIN_START_AGE` (default 20 min: un arranque normal tarda
+   10-15 min entre pip, restore del Dataset y OpenCode), relanza con
    `kaggle kernels push -p <push_dir>`. El cuaderno se auto-arranca
    (instala, restaura el Dataset, levanta OpenCode) y la última celda
    keep-alive mantiene la sesión ejecutando.
@@ -74,7 +75,7 @@ guardián lo sincroniza al metadata antes de pushear.
 | `KAGGLE_KERNEL` | — (requerida) | `owner/slug` del cuaderno |
 | `GUARDIAN_PUSH_DIR` | `kaggle/` del repo | carpeta con el `.ipynb` + metadata |
 | `GUARDIAN_URL` | — | URL estable a probar primero |
-| `GUARDIAN_MIN_START_AGE` | `2700` (45 min) | edad mínima de la última corrida para relanzar |
+| `GUARDIAN_MIN_START_AGE` | `1200` (20 min) | edad mínima de la última corrida para relanzar. Subilo si tu arranque tarda más de ~15 min (Dataset pesado); bajalo a `900` si querés recuperación más rápida — a cambio, un kernel que muera al nacer generará más pushes |
 | `GUARDIAN_ALLOW_UNKNOWN_TIME` | `0` | en `1`, relanza aunque no haya fecha (no recomendado) |
 | `GUARDIAN_TIMEOUT` | — | límite `-t` de la corrida relanzada (segundos) |
 | `GUARDIAN_DRY_RUN` | `0` | en `1`, solo dice lo que haría |
