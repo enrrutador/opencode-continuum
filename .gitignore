@@ -1,0 +1,39 @@
+# Secrets — never commit
+.env
+.env.*
+credentials.json
+auth.json
+git_credentials
+secrets/
+*.tmp
+
+# Runtime / local state (rooted: must not match src/opencode_cloud/ package)
+*.pid
+*.lock
+*.log
+/opencode_runtime/
+/opencode_cloud/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Node
+node_modules/
+
+# Editor
+.idea/
+.vscode/

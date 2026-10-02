@@ -1,0 +1,24 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "permission": "allow",
+  "compaction": {
+    "auto": true,
+    "prune": false
+  },
+  "provider": {
+    "nvidia": {
+      "name": "NVIDIA NIM",
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "https://integrate.api.nvidia.com/v1",
+        "apiKey": "{env:NVIDIA_API_KEY}"
+      },
+      "models": {
+        "nvidia/llama-3.1-nemotron-70b-instruct": {
+          "name": "nvidia/llama-3.1-nemotron-70b-instruct"
+        }
+      }
+    }
+  },
+  "model": "nvidia/llama-3.1-nemotron-70b-instruct"
+}

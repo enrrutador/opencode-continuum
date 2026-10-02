@@ -1,0 +1,31 @@
+[project]
+name = "opencode-continuum"
+version = "5.0.2"
+description = "OpenCode Continuum — persistent OpenCode on ephemeral Kaggle runtimes"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["ruff>=0.8", "pytest>=8.0"]
+kaggle = ["kagglehub>=0.2.9"]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["opencode_cloud*", "opencode_kaggle*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
