@@ -86,3 +86,29 @@ def test_decide_dead_no_time_push_when_allowed():
 def test_decide_future_timestamp_hold():
     future = NOW + timedelta(hours=1)
     assert g.decide("dead", future, NOW, _cfg())[0] == "hold"
+
+
+def test_looks_like_auth_error():
+    for text in ("401 unauthorized", "invalid credentials", "no api key"):
+        assert g.looks_like_auth_error(text) is True, text
+    assert g.looks_like_auth_error("404 not found") is False
+
+
+def test_main_disabled_without_kernel(monkeypatch, capsys):
+    monkeypatch.delenv("KAGGLE_KERNEL", raising=False)
+    assert g.main() == 0
+    assert "desactivado" in capsys.readouterr().out
+
+
+def test_main_disabled_on_auth_error(monkeypatch, capsys):
+    import subprocess
+
+    monkeypatch.setenv("KAGGLE_KERNEL", "owner/slug")
+    monkeypatch.delenv("GUARDIAN_URL", raising=False)
+
+    def fake_run(argv, timeout=120.0):
+        return subprocess.CompletedProcess(argv, 127, "", "invalid credentials")
+
+    monkeypatch.setattr(g, "run_cli", fake_run)
+    assert g.main() == 0
+    assert "desactivado" in capsys.readouterr().out

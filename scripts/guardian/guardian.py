@@ -185,11 +185,23 @@ def sync_metadata_id(push_dir: str, kernel: str, dry_run: bool) -> None:
         fh.write("\n")
 
 
+def looks_like_auth_error(text: str) -> bool:
+    """True if the CLI output smells like missing/invalid credentials."""
+    text = text.lower()
+    return any(
+        t in text
+        for t in ("credential", "unauthorized", "401", "403", "api key", "username", "kaggle.json")
+    )
+
+
 def main() -> int:
     cfg = GuardianConfig.from_env()
     if not cfg.kernel or "/" not in cfg.kernel:
-        log("KAGGLE_KERNEL must be 'owner/slug'")
-        return EXIT_UNKNOWN
+        # Fail-open for the scheduled GitHub Action: without secrets the
+        # guardian would fail RED every 15 min and spam email. Silence
+        # instead: the guardian is simply disabled until secrets exist.
+        log("KAGGLE_KERNEL no configurado — guardián desactivado (exit 0)")
+        return EXIT_OK
     log(f"kernel={cfg.kernel} push_dir={cfg.push_dir} dry_run={cfg.dry_run}")
 
     if cfg.url:
@@ -201,7 +213,11 @@ def main() -> int:
 
     res = run_cli(["kaggle", "kernels", "status", cfg.kernel])
     if res.returncode != 0:
-        log(f"`kaggle kernels status` failed: {(res.stderr or res.stdout).strip()[:300]}")
+        detail = (res.stderr or res.stdout).strip()
+        if looks_like_auth_error(detail):
+            log(f"Kaggle API sin credenciales válidas — guardián desactivado: {detail[:200]}")
+            return EXIT_OK
+        log(f"`kaggle kernels status` failed: {detail[:300]}")
         return EXIT_UNKNOWN
     status = classify_status(res.stdout)
     last_run = extract_last_run_time(res.stdout)
