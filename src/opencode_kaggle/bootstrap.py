@@ -77,6 +77,11 @@ def bootstrap(
     _ = load_secret("GITHUB_TOKEN")
     server_password = load_secret("OPENCODE_SERVER_PASSWORD") or ""
     server_username = load_secret("OPENCODE_SERVER_USERNAME") or "opencode"
+    if not server_password:
+        _log(
+            "AVISO: sin OPENCODE_SERVER_PASSWORD la URL del túnel queda "
+            "PÚBLICA — cualquiera con el link entra a tu workspace."
+        )
 
     if not dataset_id:
         dataset_id = load_secret("OPENCODE_CLOUD_DATASET")
