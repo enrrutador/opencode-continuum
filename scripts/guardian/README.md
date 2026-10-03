@@ -36,7 +36,7 @@ corre cada 15 minutos. Solo necesita estos Secrets en el repo
 | `KAGGLE_USERNAME` | tu usuario de Kaggle |
 | `KAGGLE_KEY` | tu API key (Kaggle → Settings → API → Create New Token) |
 | `KAGGLE_KERNEL` | `owner/slug` del cuaderno (ver abajo) |
-| `GUARDIAN_URL` | opcional: `https://tu-host.cfargotunnel.com` |
+| `GUARDIAN_URL` | opcional: URL estable a probar primero. Con túnel nombrado usá `https://opencode.tudominio.com/go` (responde 302/503 según estado) o `.../healthz` del redirector |
 
 ## Opción B: correrlo en tu PC / teléfono (Termux)
 

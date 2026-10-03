@@ -11,13 +11,16 @@ import json
 import os
 import signal
 import threading
-from pathlib import Path
 from typing import Optional
 
-from opencode_cloud.access import KaggleProxyAccess, format_workstation_banner, is_port_open, wait_for_port
-from opencode_cloud.cloudflare_access import CloudflareAccess
-from opencode_cloud.ports import get_opencode_port
+from opencode_cloud.access import (
+    KaggleProxyAccess,
+    format_workstation_banner,
+    is_port_open,
+    wait_for_port,
+)
 from opencode_cloud.checkpoint import CheckpointManager, CheckpointPolicy, PublishReason
+from opencode_cloud.cloudflare_access import CloudflareAccess
 from opencode_cloud.github_sync import configure_remote, init_repo
 from opencode_cloud.nvidia import fetch_models, select_model
 from opencode_cloud.opencode import (
@@ -27,9 +30,10 @@ from opencode_cloud.opencode import (
     write_opencode_config,
 )
 from opencode_cloud.persistence import KagglePersistence, RecoveryStatus, default_store
+from opencode_cloud.ports import get_opencode_port
 from opencode_cloud.runtime import ensure_dirs, get_paths, is_kaggle
 from opencode_cloud.scheduler import CheckpointScheduler
-from opencode_cloud.secrets import load_required_secret, load_secret
+from opencode_cloud.secrets import load_secret
 from opencode_cloud.watchdog import Watchdog
 from opencode_kaggle.kaggle import resolve_dataset_id
 
@@ -225,6 +229,20 @@ def bootstrap(
 
     _log(f"OpenCode is listening on 127.0.0.1:{opencode_port}")
 
+    # Permanent /go entry: redirects to the latest live session.
+    # Read-only; never creates sessions. Disable with OPENCODE_REDIRECTOR=0.
+    redirector = None
+    if os.environ.get("OPENCODE_REDIRECTOR", "1") != "0":
+        try:
+            from opencode_cloud.entry import EntryRedirector
+
+            redirector = EntryRedirector(opencode_port, paths.workspace)
+            redirector.start()
+            _log(f"Entry /go redirector listening on 127.0.0.1:{redirector.port}")
+        except Exception as e:
+            _log(f"Entry redirector disabled: {type(e).__name__}")
+            redirector = None
+
     access_info = {
         "available": False,
         "url": None,
@@ -418,6 +436,12 @@ def bootstrap(
         _shutdown_done["ok"] = True
         _log("Shutdown: begin")
         try:
+            if redirector is not None:
+                redirector.stop()
+                _log("Shutdown: entry redirector stopped")
+        except Exception as e:
+            _log(f"Shutdown: redirector stop error: {type(e).__name__}")
+        try:
             watchdog.stop()
         except Exception as e:
             _log(f"Shutdown: watchdog stop error: {type(e).__name__}")
@@ -470,6 +494,7 @@ def bootstrap(
         "cloud_root": str(paths.cloud_root),
         "opencode_port": opencode_port,
         "opencode_pid": state["proc"].pid,
+        "redirector_port": redirector.port if redirector else None,
         "model": selected_model,
         "dataset_id": did,
         "web_access": access_info,

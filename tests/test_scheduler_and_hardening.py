@@ -9,11 +9,9 @@ import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 
 def test_scheduler_no_change_no_publish():
-    from opencode_cloud.checkpoint import CheckpointManager, PublishReason
+    from opencode_cloud.checkpoint import CheckpointManager
     from opencode_cloud.scheduler import CheckpointScheduler
 
     mgr = CheckpointManager()
@@ -214,12 +212,16 @@ def test_fingerprint_incomplete_when_over_max():
 def test_classify_download_errors():
     from opencode_cloud.persistence import DownloadErrorKind, classify_download_error
 
-    assert classify_download_error(Exception("404 Dataset not found")) == DownloadErrorKind.DATASET_NOT_FOUND
-    assert classify_download_error(Exception("401 Unauthorized")) == DownloadErrorKind.AUTHENTICATION_ERROR
-    assert classify_download_error(Exception("403 Forbidden")) == DownloadErrorKind.AUTHORIZATION_ERROR
-    assert classify_download_error(Exception("Connection timeout")) == DownloadErrorKind.NETWORK_ERROR
-    assert classify_download_error(Exception("429 rate limit")) == DownloadErrorKind.RATE_LIMIT
-    assert classify_download_error(Exception("something weird")) == DownloadErrorKind.DOWNLOAD_ERROR
+    cases = [
+        ("404 Dataset not found", DownloadErrorKind.DATASET_NOT_FOUND),
+        ("401 Unauthorized", DownloadErrorKind.AUTHENTICATION_ERROR),
+        ("403 Forbidden", DownloadErrorKind.AUTHORIZATION_ERROR),
+        ("Connection timeout", DownloadErrorKind.NETWORK_ERROR),
+        ("429 rate limit", DownloadErrorKind.RATE_LIMIT),
+        ("something weird", DownloadErrorKind.DOWNLOAD_ERROR),
+    ]
+    for message, expected in cases:
+        assert classify_download_error(Exception(message)) == expected
 
 
 def test_recovery_auth_error_is_restore_failed():

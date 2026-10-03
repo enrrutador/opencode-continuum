@@ -393,6 +393,33 @@ ruff check src/
 | Puerto local; acceso vía Jupyter Proxy | URL de sesión; regenerar en cada runtime |
 | Watchdog muere con el runtime | Continuidad = bootstrap + Dataset en el siguiente kernel |
 
+## Un solo link permanente (`/go`)
+
+El problema de las sesiones caóticas tenía dos causas: la raíz del proyecto
+crea una sesión **nueva** en cada visita (los links se multiplicaban), y las
+URLs de quick tunnel cambian en cada arranque. Solución en tres partes:
+
+1. **Redirector `/go`** (`src/opencode_cloud/entry.py`): servidor chico y de
+   solo lectura en el puerto 4097 que resuelve **en vivo** tu sesión más
+   reciente y redirige a ella. Nunca crea sesiones. Si la API está caída
+   responde 503 (reintentar en unos minutos basta).
+2. **Pin de sesión**: el link impreso por la celda apunta a tu última sesión
+   activa, con pin persistido en el Dataset
+   (`opencode_cloud/metadata/session.json`) para desempatar cuando el
+   restore aplana los timestamps. Si arrancaste un chat más nuevo, gana ese.
+3. **Bookmark fijo** (setup único, requiere túnel nombrado): en el dashboard
+   de Cloudflare Zero Trust, con el mismo túnel, agregá DOS public hostnames
+   al mismo dominio — `https://opencode.tudominio.com` con **Path `/go`** →
+   servicio `http://localhost:4097`, y el mismo hostname con **Path `*`** →
+   `http://localhost:4096` (la regla más específica gana). Guardate
+   `https://opencode.tudominio.com/go` en el teléfono: **siempre** aterriza
+   en la sesión tal cual la dejaste, en cualquier dispositivo, para siempre.
+
+Sin túnel nombrado, la celda imprime un único link por arranque (quick tunnel
+cambia de URL por diseño: el bookmark permanente necesita el túnel nombrado).
+
+---
+
 ## Reinicio automático (dos niveles)
 
 | Nivel | Dónde vive | Qué cubre |

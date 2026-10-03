@@ -17,7 +17,6 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Generator, Optional
 
-
 _URL_RE = re.compile(r"^https://github\.com/[^/]+/[^/]+(\.git)?$")
 
 

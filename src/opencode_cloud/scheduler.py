@@ -69,7 +69,8 @@ class CheckpointScheduler:
     def shutdown_checkpoint(self) -> dict:
         """Stop loop and perform final remote checkpoint under the lock."""
         self._running = False
-        if self._thread and self._thread.is_alive() and threading.current_thread() is not self._thread:
+        same_thread = threading.current_thread() is self._thread
+        if self._thread and self._thread.is_alive() and not same_thread:
             self._thread.join(timeout=10.0)
         self._thread = None
         with self.lock:

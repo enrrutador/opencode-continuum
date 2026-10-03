@@ -501,7 +501,7 @@ def test_kaggle_secrets_uses_user_secrets_client():
 
 
 def test_github_credential_file_deleted_even_on_failure():
-    from opencode_cloud.github_sync import temporary_credential_helper, init_repo
+    from opencode_cloud.github_sync import init_repo, temporary_credential_helper
 
     with tempfile.TemporaryDirectory() as tmp:
         ws = Path(tmp) / "ws"
@@ -564,9 +564,9 @@ def test_runtime_paths_kaggle_layout():
 
 
 def test_ensure_node_idempotent_when_present():
-    from opencode_cloud.opencode import ensure_node
-
     import shutil
+
+    from opencode_cloud.opencode import ensure_node
 
     if shutil.which("node"):
         ver = ensure_node()

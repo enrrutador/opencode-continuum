@@ -39,7 +39,8 @@ def fetch_models(api_key: str) -> list[str]:
             body = resp.read().decode("utf-8", errors="replace")
         payload = json.loads(body)
         return [item["id"] for item in payload.get("data", []) if item.get("id")]
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError, ValueError, KeyError):
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
+            OSError, ValueError, KeyError):
         return []
     except Exception:
         # Never re-raise with api_key in the message

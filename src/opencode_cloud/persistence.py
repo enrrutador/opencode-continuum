@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 
 class RecoveryStatus(str, Enum):
@@ -43,15 +43,18 @@ class DownloadErrorKind(str, Enum):
 def classify_download_error(exc: BaseException) -> DownloadErrorKind:
     msg = str(exc).lower()
     name = type(exc).__name__.lower()
-    if any(t in msg for t in ("401", "unauthorized", "authentication", "invalid credentials", "api key")):
+    auth_words = ("401", "unauthorized", "authentication", "invalid credentials", "api key")
+    if any(t in msg for t in auth_words):
         return DownloadErrorKind.AUTHENTICATION_ERROR
     if any(t in msg for t in ("403", "forbidden", "permission denied", "not allowed")):
         return DownloadErrorKind.AUTHORIZATION_ERROR
     if any(t in msg for t in ("429", "rate limit", "too many requests")):
         return DownloadErrorKind.RATE_LIMIT
-    if any(t in msg for t in ("timeout", "timed out", "connection", "network", "dns", "unreachable", "ssl")):
+    net_words = ("timeout", "timed out", "connection", "network", "dns", "unreachable", "ssl")
+    if any(t in msg for t in net_words):
         return DownloadErrorKind.NETWORK_ERROR
-    if any(t in msg for t in ("404", "not found", "does not exist", "dataset does not exist", "no such dataset")):
+    nf_words = ("404", "not found", "does not exist", "dataset does not exist", "no such dataset")
+    if any(t in msg for t in nf_words):
         return DownloadErrorKind.DATASET_NOT_FOUND
     if "not found" in name or "http404" in name:
         return DownloadErrorKind.DATASET_NOT_FOUND
@@ -199,8 +202,10 @@ def validate_integrity_manifest(root: Path, manifest: Optional[dict] = None) -> 
         try:
             manifest = json.loads(mpath.read_text(encoding="utf-8"))
         except Exception as e:
-            return {"ok": False, "status": "invalid_manifest", "message": f"manifest unreadable: {e}"}
-    if not isinstance(manifest, dict) or manifest.get("kind") != "opencode-cloud-workstation-manifest":
+            msg = f"manifest unreadable: {e}"
+            return {"ok": False, "status": "invalid_manifest", "message": msg}
+    kind_ok = manifest.get("kind") == "opencode-cloud-workstation-manifest"
+    if not isinstance(manifest, dict) or not kind_ok:
         return {"ok": False, "status": "invalid_manifest", "message": "bad manifest kind"}
     mismatches = []
     for entry in manifest.get("files") or []:
@@ -271,18 +276,22 @@ class PersistentStore:
         base = Path(path) if path is not None else self.root
         marker = base / self.MARKER_FILE
         if not marker.exists():
-            return {"ok": False, "status": "incomplete", "message": "missing workstation.json marker"}
+            reason = "missing workstation.json marker"
+            return {"ok": False, "status": "incomplete", "message": reason}
         try:
             data = json.loads(marker.read_text(encoding="utf-8"))
         except Exception as e:
-            return {"ok": False, "status": "invalid", "message": f"marker unreadable: {type(e).__name__}"}
+            reason = f"marker unreadable: {type(e).__name__}"
+            return {"ok": False, "status": "invalid", "message": reason}
         if not isinstance(data, dict):
             return {"ok": False, "status": "invalid", "message": "marker is not an object"}
         if data.get("kind") != "opencode-cloud-workstation":
-            return {"ok": False, "status": "incompatible", "message": f"unexpected kind: {data.get('kind')!r}"}
+            kind = f"unexpected kind: {data.get('kind')!r}"
+            return {"ok": False, "status": "incompatible", "message": kind}
         version = str(data.get("version", ""))
         if not version.startswith("5."):
-            return {"ok": False, "status": "incompatible", "message": f"incompatible schema version: {version!r}"}
+            reason = f"incompatible schema version: {version!r}"
+            return {"ok": False, "status": "incompatible", "message": reason}
         if not (base / "workspace").is_dir():
             return {"ok": False, "status": "incomplete", "message": "missing workspace/ directory"}
         if not ((base / "state").is_dir() or (base / "config").is_dir()):
@@ -298,9 +307,18 @@ class PersistentStore:
         if extra:
             data.update(extra)
         self.ensure_structure()
-        (self.root / self.MARKER_FILE).write_text(json.dumps(data, indent=2), encoding="utf-8")
+        marker_path = self.root / self.MARKER_FILE
+        marker_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
-    def save_local(self, *, opencode_data: Path, opencode_config: Path, workspace: Path, xdg_root: Optional[Path] = None, extra_meta: Optional[dict] = None) -> dict:
+    def save_local(
+        self,
+        *,
+        opencode_data: Path,
+        opencode_config: Path,
+        workspace: Path,
+        xdg_root: Optional[Path] = None,
+        extra_meta: Optional[dict] = None,
+    ) -> dict:
         self.ensure_structure()
 
         # Flush WAL -> DB antes de copiar: si no, el .db copiado pierde
@@ -339,11 +357,20 @@ class PersistentStore:
         if extra_meta:
             meta.update(extra_meta)
         self.metadata_dir.mkdir(parents=True, exist_ok=True)
-        (self.metadata_dir / "last_local.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        last_local = self.metadata_dir / "last_local.json"
+        last_local.write_text(json.dumps(meta, indent=2), encoding="utf-8")
         self.write_marker(extra_meta)
         return meta
 
-    def restore_to(self, *, opencode_data: Path, opencode_config: Path, workspace: Path, xdg_root: Optional[Path] = None, source: Optional[Path] = None) -> bool:
+    def restore_to(
+        self,
+        *,
+        opencode_data: Path,
+        opencode_config: Path,
+        workspace: Path,
+        xdg_root: Optional[Path] = None,
+        source: Optional[Path] = None,
+    ) -> bool:
         base = Path(source) if source is not None else self.root
         restored_any = False
 
@@ -382,7 +409,8 @@ class PersistentStore:
             if _restore(xdg_src, xdg_root):
                 restored_any = True
                 try:
-                    xdg_restored_opencode_db = (Path(xdg_root) / "share" / "opencode" / "opencode.db").is_file()
+                    db_path = Path(xdg_root) / "share" / "opencode" / "opencode.db"
+                    xdg_restored_opencode_db = db_path.is_file()
                 except Exception:
                     xdg_restored_opencode_db = False
         if not xdg_restored_opencode_db:
@@ -429,11 +457,17 @@ class PersistentStore:
         if marker_src.exists():
             shutil.copy2(marker_src, self.staging / self.MARKER_FILE)
         else:
-            data = {"kind": "opencode-cloud-workstation", "version": "5.0.0", "staged_at": datetime.now(timezone.utc).isoformat()}
-            (self.staging / self.MARKER_FILE).write_text(json.dumps(data, indent=2), encoding="utf-8")
+            data = {
+                "kind": "opencode-cloud-workstation",
+                "version": "5.0.0",
+                "staged_at": datetime.now(timezone.utc).isoformat(),
+            }
+            marker_dst = self.staging / self.MARKER_FILE
+            marker_dst.write_text(json.dumps(data, indent=2), encoding="utf-8")
         try:
             manifest = build_integrity_manifest(self.staging)
-            (self.staging / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+            manifest_dst = self.staging / "manifest.json"
+            manifest_dst.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         except Exception:
             pass
         return self.staging
@@ -461,19 +495,27 @@ class KagglePersistence:
             import kagglehub  # type: ignore
             return kagglehub
         except ImportError as e:
-            raise RuntimeError("kagglehub is required for Kaggle Dataset persistence. Install with: pip install kagglehub") from e
+            raise RuntimeError(
+                "kagglehub is required for Kaggle Dataset persistence. "
+                "Install with: pip install kagglehub"
+            ) from e
 
     def download(self, force: bool = False) -> tuple[bool, Optional[Path], str]:
         kh = self._kagglehub()
         try:
             try:
-                path_str = kh.dataset_download(self.dataset_id, output_dir=str(self.download_cache), force_download=force)
+                path_str = kh.dataset_download(
+                    self.dataset_id,
+                    output_dir=str(self.download_cache),
+                    force_download=force,
+                )
             except TypeError:
                 path_str = kh.dataset_download(self.dataset_id, force_download=force)
             path = Path(path_str)
             if path.exists():
                 return True, path, f"Downloaded to {path}"
-            return False, None, f"Download returned non-existent path: {path_str}"
+            missing = f"Download returned non-existent path: {path_str}"
+            return False, None, missing
         except Exception as e:
             kind = classify_download_error(e)
             if kind == DownloadErrorKind.DATASET_NOT_FOUND:
@@ -486,7 +528,8 @@ class KagglePersistence:
             return False, "Staging directory is empty or missing"
         kh = self._kagglehub()
         try:
-            kh.dataset_upload(self.dataset_id, str(local_dir), version_notes=version_notes or "OpenCode Cloud Workstation checkpoint")
+            notes = version_notes or "OpenCode Cloud Workstation checkpoint"
+            kh.dataset_upload(self.dataset_id, str(local_dir), version_notes=notes)
             return True, f"Published to {self.dataset_id}"
         except Exception as e:
             return False, f"Upload failed: {e}"
@@ -495,14 +538,27 @@ class KagglePersistence:
         ok, download_path, msg = self.download()
         if not ok or download_path is None:
             upper = msg.upper()
-            if "DATASET DOES NOT EXIST" in upper or upper.startswith("DATASET_NOT_FOUND"):
-                return RecoveryResult(status=RecoveryStatus.FRESH_WORKSTATION, dataset_id=self.dataset_id, message=msg)
+            not_found = "DATASET DOES NOT EXIST" in upper
+            if not_found or upper.startswith("DATASET_NOT_FOUND"):
+                status = RecoveryStatus.FRESH_WORKSTATION
+                return RecoveryResult(status=status, dataset_id=self.dataset_id, message=msg)
             for kind in DownloadErrorKind:
                 if upper.startswith(kind.value) or kind.value in upper:
                     if kind == DownloadErrorKind.DATASET_NOT_FOUND:
-                        return RecoveryResult(status=RecoveryStatus.FRESH_WORKSTATION, dataset_id=self.dataset_id, message=msg)
-                    return RecoveryResult(status=RecoveryStatus.RESTORE_FAILED, dataset_id=self.dataset_id, message=msg, details={"error_kind": kind.value})
-            return RecoveryResult(status=RecoveryStatus.RESTORE_FAILED, dataset_id=self.dataset_id, message=msg)
+                        status = RecoveryStatus.FRESH_WORKSTATION
+                        return RecoveryResult(
+                            status=status, dataset_id=self.dataset_id, message=msg
+                        )
+                    status = RecoveryStatus.RESTORE_FAILED
+                    details = {"error_kind": kind.value}
+                    return RecoveryResult(
+                        status=status,
+                        dataset_id=self.dataset_id,
+                        message=msg,
+                        details=details,
+                    )
+            status = RecoveryStatus.RESTORE_FAILED
+            return RecoveryResult(status=status, dataset_id=self.dataset_id, message=msg)
 
         if not store.is_valid_workstation(download_path):
             try:
@@ -510,8 +566,17 @@ class KagglePersistence:
             except Exception:
                 has_files = False
             if not has_files:
-                return RecoveryResult(status=RecoveryStatus.FRESH_WORKSTATION, dataset_id=self.dataset_id, message="Dataset exists but is empty; starting fresh")
-            return RecoveryResult(status=RecoveryStatus.RESTORE_FAILED, dataset_id=self.dataset_id, message="Downloaded Dataset does not contain a valid workstation marker", details={"path": str(download_path)})
+                status = RecoveryStatus.FRESH_WORKSTATION
+                msg = "Dataset exists but is empty; starting fresh"
+                return RecoveryResult(status=status, dataset_id=self.dataset_id, message=msg)
+            status = RecoveryStatus.RESTORE_FAILED
+            msg = "Downloaded Dataset does not contain a valid workstation marker"
+            return RecoveryResult(
+                status=status,
+                dataset_id=self.dataset_id,
+                message=msg,
+                details={"path": str(download_path)},
+            )
 
         try:
             snapshot = self.working_root / "opencode_cloud_restore_snapshot"
@@ -536,18 +601,41 @@ class KagglePersistence:
                 else:
                     shutil.copy2(item, dest)
             if not store.is_valid_workstation():
-                return RecoveryResult(status=RecoveryStatus.RESTORE_FAILED, dataset_id=self.dataset_id, message="Copy completed but workstation validation failed")
+                status = RecoveryStatus.RESTORE_FAILED
+                msg = "Copy completed but workstation validation failed"
+                return RecoveryResult(
+                    status=status, dataset_id=self.dataset_id, message=msg
+                )
             integrity = validate_integrity_manifest(store.root)
             if not integrity.get("ok") and integrity.get("status") != "no_manifest":
-                return RecoveryResult(status=RecoveryStatus.RESTORE_FAILED, dataset_id=self.dataset_id, message=f"Integrity check failed: {integrity.get('message')}", details=integrity)
-            return RecoveryResult(status=RecoveryStatus.RESTORED_FROM_DATASET, dataset_id=self.dataset_id, message=f"Restored from {download_path}", details={"path": str(download_path)})
+                status = RecoveryStatus.RESTORE_FAILED
+                msg = f"Integrity check failed: {integrity.get('message')}"
+                return RecoveryResult(
+                    status=status,
+                    dataset_id=self.dataset_id,
+                    message=msg,
+                    details=integrity,
+                )
+            status = RecoveryStatus.RESTORED_FROM_DATASET
+            msg = f"Restored from {download_path}"
+            return RecoveryResult(
+                status=status,
+                dataset_id=self.dataset_id,
+                message=msg,
+                details={"path": str(download_path)},
+            )
         except Exception as e:
-            return RecoveryResult(status=RecoveryStatus.RESTORE_FAILED, dataset_id=self.dataset_id, message=f"Restore copy failed: {e}")
+            status = RecoveryStatus.RESTORE_FAILED
+            msg = f"Restore copy failed: {e}"
+            return RecoveryResult(status=status, dataset_id=self.dataset_id, message=msg)
 
-    def publish_from_store(self, store: PersistentStore, version_notes: str = "") -> tuple[bool, str]:
+    def publish_from_store(
+        self, store: PersistentStore, version_notes: str = ""
+    ) -> tuple[bool, str]:
         validation = store.validate_workstation()
         if not validation.get("ok"):
-            return False, f"refusing to publish invalid workstation: {validation.get('message')}"
+            reason = validation.get("message")
+            return False, f"refusing to publish invalid workstation: {reason}"
         staging = store.prepare_staging()
         return self.upload(staging, version_notes=version_notes)
 
@@ -562,7 +650,9 @@ def default_store(working: Optional[Path] = None) -> PersistentStore:
     return store
 
 
-def default_kaggle_persistence(dataset_id: Optional[str] = None, working: Optional[Path] = None) -> KagglePersistence:
+def default_kaggle_persistence(
+    dataset_id: Optional[str] = None, working: Optional[Path] = None
+) -> KagglePersistence:
     import os
     dataset_id = dataset_id or os.environ.get("OPENCODE_CLOUD_DATASET")
     if not dataset_id:

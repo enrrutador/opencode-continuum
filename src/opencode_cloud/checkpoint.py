@@ -20,7 +20,6 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
-
 # Policy defaults (RPO target under normal operation)
 LOCAL_CHECKPOINT_INTERVAL = 60  # seconds between local observations/saves
 REMOTE_CHECKPOINT_MIN_INTERVAL = 900  # 15 minutes between normal remote publishes

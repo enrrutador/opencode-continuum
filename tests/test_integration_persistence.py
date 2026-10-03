@@ -244,8 +244,8 @@ def test_watchdog_does_not_publish_dataset(env):
 
 
 def test_secrets_never_land_in_store(env):
-    from opencode_cloud.persistence import PersistentStore
     from opencode_cloud.opencode import write_opencode_config
+    from opencode_cloud.persistence import PersistentStore
 
     working = env["working"]
     tmp = env["tmp"]
