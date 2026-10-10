@@ -91,7 +91,7 @@ def _request(port: int, path: str):
 def test_redirector_latest_session_302():
     r = _get_free_redirector(lambda: SESSIONS)
     try:
-        status, headers, _ = _request(r.port, "/go")
+        status, headers, _ = _request(r.port, "/latest")
         ws = workspace_b64("/kaggle/working/ws")
         assert status == 302
         assert headers["Location"] == f"/{ws}/session/latest"
@@ -100,10 +100,21 @@ def test_redirector_latest_session_302():
     assert not r.running
 
 
-def test_redirector_no_sessions_redirects_to_list():
+def test_redirector_go_auto_query_still_redirects():
+    r = _get_free_redirector(lambda: SESSIONS)
+    try:
+        status, headers, _ = _request(r.port, "/go?auto=1")
+        ws = workspace_b64("/kaggle/working/ws")
+        assert status == 302
+        assert headers["Location"] == f"/{ws}/session/latest"
+    finally:
+        r.stop()
+
+
+def test_redirector_no_sessions_latest_redirects_to_list():
     r = _get_free_redirector(lambda: [])
     try:
-        status, headers, _ = _request(r.port, "/")
+        status, headers, _ = _request(r.port, "/latest")
         assert status == 302
         assert headers["Location"].endswith("/session")
     finally:
@@ -116,7 +127,7 @@ def test_redirector_api_down_503():
 
     r = _get_free_redirector(boom)
     try:
-        status, _, body = _request(r.port, "/go")
+        status, _, body = _request(r.port, "/latest")
         assert status == 503
         assert "reintent" in body
     finally:
@@ -161,7 +172,7 @@ def test_redirector_head_support():
     r = _get_free_redirector(lambda: SESSIONS)
     try:
         conn = http.client.HTTPConnection("127.0.0.1", r.port, timeout=5)
-        conn.request("HEAD", "/go")
+        conn.request("HEAD", "/latest")
         resp = conn.getresponse()
         status = resp.status
         loc = resp.getheader("Location")
@@ -169,6 +180,128 @@ def test_redirector_head_support():
         conn.close()
         assert status == 302
         assert loc.endswith("/session/latest")
+    finally:
+        r.stop()
+
+
+def _get_picker(port: int):
+    status, headers, body = _request(port, "/go")
+    return status, headers, body
+
+
+def test_picker_serves_html_list():
+    r = _get_free_redirector(lambda: SESSIONS)
+    try:
+        status, headers, body = _get_picker(r.port)
+        ws = workspace_b64("/kaggle/working/ws")
+        assert status == 200
+        assert headers["Content-Type"].startswith("text/html")
+        assert headers["Cache-Control"] == "no-store"
+        assert f'/{ws}/session/latest' in body
+        assert f'/{ws}/session/mid' in body
+        assert f'/{ws}/session/old' in body
+        assert body.index("latest") < body.index("mid") < body.index("old")
+        assert "+ Nueva sesión" in body
+        assert f'href="/{ws}/session"' in body
+    finally:
+        r.stop()
+
+
+def test_picker_badges_latest_session():
+    r = _get_free_redirector(lambda: SESSIONS)
+    try:
+        _, _, body = _get_picker(r.port)
+        assert "última" in body
+        assert body.count('class="badge"') == 1
+    finally:
+        r.stop()
+
+
+def test_picker_badge_follows_pin_on_flat_timestamps():
+    flat = [_sess("a", 0), _sess("b", 0), _sess("c", 0)]
+    pin_file = None
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as td:
+        pin_file = Path(td) / "session.json"
+        save_pin(pin_file, "b", "B")
+        r = EntryRedirector(
+            4096, "/kaggle/working/ws", port=0,
+            fetch_sessions=lambda: flat, pin_path=pin_file,
+        )
+        r.start()
+        try:
+            _, _, body = _get_picker(r.port)
+            assert body.count('class="badge"') == 1
+            first_link = body.split('class="row"', 1)[1]
+            assert "/session/b" in first_link
+        finally:
+            r.stop()
+
+
+def test_picker_escapes_titles():
+    evil = [{
+        "id": "x1",
+        "title": "<script>alert(1)</script>",
+        "time": {"updated": 100},
+    }]
+    r = _get_free_redirector(lambda: evil)
+    try:
+        _, _, body = _get_picker(r.port)
+        assert "<script>alert" not in body
+        import html as _html
+
+        assert _html.escape("<script>alert(1)</script>") in body
+    finally:
+        r.stop()
+
+
+def test_picker_untitled_sessions_render_fallback():
+    sess = [{"id": "n1", "title": "", "time": {"updated": 100}}]
+    r = _get_free_redirector(lambda: sess)
+    try:
+        _, _, body = _get_picker(r.port)
+        assert "Sin título" in body
+    finally:
+        r.stop()
+
+
+def test_picker_empty_state():
+    r = _get_free_redirector(lambda: [])
+    try:
+        status, _, body = _get_picker(r.port)
+        assert status == 200
+        assert "Todavía no hay sesiones" in body
+        ws = workspace_b64("/kaggle/working/ws")
+        assert f'href="/{ws}/session"' in body
+    finally:
+        r.stop()
+
+
+def test_picker_api_down_503_html():
+    def boom():
+        raise RuntimeError("api down")
+
+    r = _get_free_redirector(boom)
+    try:
+        status, headers, body = _get_picker(r.port)
+        assert status == 503
+        assert headers["Content-Type"].startswith("text/html")
+        assert "Reintentá" in body
+    finally:
+        r.stop()
+
+
+def test_picker_head_support():
+    r = _get_free_redirector(lambda: SESSIONS)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", r.port, timeout=5)
+        conn.request("HEAD", "/go")
+        resp = conn.getresponse()
+        status = resp.status
+        resp.read()
+        conn.close()
+        assert status == 200
     finally:
         r.stop()
 

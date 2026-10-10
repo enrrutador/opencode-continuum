@@ -234,16 +234,24 @@ def bootstrap(
 
     _log(f"OpenCode is listening on 127.0.0.1:{opencode_port}")
 
-    # Permanent /go entry: redirects to the latest live session.
-    # Read-only; never creates sessions. Disable with OPENCODE_REDIRECTOR=0.
+    # Permanent /go entry: session picker at / (and /go), auto-redirect
+    # at /latest (and /go?auto=1). Read-only; never creates sessions.
+    # Disable with OPENCODE_REDIRECTOR=0.
     redirector = None
     if os.environ.get("OPENCODE_REDIRECTOR", "1") != "0":
         try:
             from opencode_cloud.entry import EntryRedirector
 
-            redirector = EntryRedirector(opencode_port, paths.workspace)
+            redirector = EntryRedirector(
+                opencode_port,
+                paths.workspace,
+                pin_path=paths.metadata / "session.json",
+            )
             redirector.start()
-            _log(f"Entry /go redirector listening on 127.0.0.1:{redirector.port}")
+            _log(
+                f"Entry picker listening on 127.0.0.1:{redirector.port} "
+                "(/ lista de sesiones, /latest última)"
+            )
         except Exception as e:
             _log(f"Entry redirector disabled: {type(e).__name__}")
             redirector = None
@@ -313,6 +321,37 @@ def bootstrap(
                 if info.opencode_listening
                 else "OPENCODE_NOT_RUNNING"
             )
+
+    # Picker reachability: with a quick tunnel the app URL only exposes
+    # the SPA (whose root creates new sessions), so the picker gets its
+    # own quick tunnel. With a named tunnel the dashboard /go rule (see
+    # README) already routes to the redirector port. Disable with
+    # OPENCODE_PICKER_TUNNEL=0.
+    picker_access = None
+    if (
+        redirector is not None
+        and enable_access_layer
+        and not os.environ.get("CLOUDFLARE_TUNNEL_TOKEN")
+        and os.environ.get("OPENCODE_PICKER_TUNNEL", "1") != "0"
+    ):
+        try:
+            picker_tunnel = CloudflareAccess(
+                redirector.port,
+                log_path=paths.logs / "cloudflare-picker-tunnel.log",
+            )
+            p_info = picker_tunnel.start()
+            if p_info.available and p_info.url:
+                state["picker_tunnel"] = picker_tunnel
+                picker_access = p_info
+                _log(f"Session picker URL: {p_info.url}")
+            else:
+                _log(f"Picker tunnel unavailable: {p_info.status}")
+                try:
+                    picker_tunnel.stop()
+                except Exception:
+                    pass
+        except Exception as e:
+            _log(f"Picker tunnel disabled: {type(e).__name__}")
 
     ckpt = CheckpointManager(policy or CheckpointPolicy())
     ckpt.observe_paths(paths.workspace, paths.opencode_data)
@@ -458,6 +497,13 @@ def bootstrap(
         except Exception as e:
             _log(f"Shutdown: tunnel stop error: {type(e).__name__}")
         try:
+            picker_tunnel = state.get("picker_tunnel")
+            if picker_tunnel is not None:
+                picker_tunnel.stop()
+                _log("Shutdown: picker tunnel stopped")
+        except Exception as e:
+            _log(f"Shutdown: picker tunnel stop error: {type(e).__name__}")
+        try:
             scheduler.shutdown_checkpoint()
         except Exception as e:
             _log(f"Shutdown: checkpoint error: {type(e).__name__}")
@@ -500,6 +546,12 @@ def bootstrap(
         "opencode_port": opencode_port,
         "opencode_pid": state["proc"].pid,
         "redirector_port": redirector.port if redirector else None,
+        "session_picker": {
+            "available": picker_access is not None,
+            "url": picker_access.url if picker_access else None,
+            "port": redirector.port if redirector else None,
+            "paths": {"picker": "/go", "latest": "/latest"},
+        },
         "model": selected_model,
         "dataset_id": did,
         "web_access": access_info,

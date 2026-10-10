@@ -1,4 +1,4 @@
-"""Permanent web entry ("one link forever") + session pinning.
+"""Permanent web entry: session picker ("list, then choose") + auto-redirect.
 
 Problem this module solves:
   - OpenCode's project root creates a NEW session on every visit, so
@@ -8,19 +8,20 @@ Problem this module solves:
 Two cooperating pieces:
 
 1. EntryRedirector: a tiny read-only HTTP server (default port 4097).
-   GET anything -> 302 to /{workspace_b64}/session/{latest_session_id},
-   resolved LIVE against the local OpenCode API on every hit. It never
-   creates sessions (GET only). With a Cloudflare named tunnel plus a
-   dashboard path rule (host /go -> :4097, host * -> :4096), the phone
-   bookmark https://<host>/go always lands on the session you left,
-   across kernel restarts, tunnels and devices. Fallbacks: no sessions
-   yet -> redirect to the session list view; API down -> 503 (watchdog
-   or guardian will bring it back; retrying is enough).
+   GET / (or /go) -> HTML picker: the list of sessions of the workspace,
+   newest first, each linking straight to that session in the SPA. It
+   never creates sessions (GET only). GET /latest (or /go?auto=1) keeps
+   the previous behavior: 302 to the session you left (pin-aware).
+   With a Cloudflare named tunnel plus a dashboard path rule
+   (host /go -> :4097, host * -> :4096), the phone bookmark
+   https://<host>/go always lands on the picker; with a quick tunnel the
+   bootstrap also exposes :4097 through its own tunnel URL.
 
 2. Session pin: pick_session() prefers the pinned session id persisted
    in the Dataset-backed metadata dir (survives restarts), falling back
    to the most recently updated session. The notebook cell uses it to
-   print ONE stable link per boot instead of a list.
+   print ONE stable deep link per boot, and the picker highlights the
+   same session with a badge.
 
 Only the standard library is used.
 """
@@ -28,11 +29,14 @@ Only the standard library is used.
 from __future__ import annotations
 
 import base64
+import html
 import json
 import os
 import threading
+import time
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Callable, Optional
@@ -41,6 +45,16 @@ DEFAULT_ENTRY_PORT = 4097
 
 HEALTH_PATH = "/healthz"
 NO_SESSIONS_PATH = "/session"
+LATEST_PATH = "/latest"
+PICKER_PATHS = ("/", "/go")
+
+_MAX_SESSIONS_IN_PAGE = 100
+_TITLE_MAX_CHARS = 140
+
+_MONTHS = (
+    "ene", "feb", "mar", "abr", "may", "jun",
+    "jul", "ago", "sep", "oct", "nov", "dic",
+)
 
 
 def workspace_b64(workspace: str) -> str:
@@ -112,6 +126,128 @@ def default_fetch_sessions(opencode_port: int, workspace: str) -> list:
     return data
 
 
+def format_relative_time(updated_ms: float, now: Optional[float] = None) -> str:
+    """Human-relative Spanish time for a millisecond epoch (UTC dates)."""
+    now = now if now is not None else time.time()
+    delta = max(0.0, now - float(updated_ms or 0) / 1000.0)
+    if delta < 45:
+        return "ahora"
+    if delta < 3600:
+        return f"hace {int(delta // 60)} min"
+    if delta < 86400:
+        return f"hace {int(delta // 3600)} h"
+    if delta < 7 * 86400:
+        return f"hace {int(delta // 86400)} d"
+    dt = datetime.fromtimestamp(float(updated_ms or 0) / 1000.0, tz=timezone.utc)
+    return f"{dt.day} {_MONTHS[dt.month - 1]}"
+
+
+def _session_row(sess: dict, ws_b64: str, *, badge: bool) -> str:
+    sid = str(sess.get("id") or "")
+    title = str(sess.get("title") or "").strip()
+    if not title:
+        title = "Sin título"
+    if len(title) > _TITLE_MAX_CHARS:
+        title = title[: _TITLE_MAX_CHARS - 1] + "…"
+    when = format_relative_time(_session_updated(sess))
+    safe_title = html.escape(title, quote=True)
+    safe_sid = html.escape(sid, quote=True)
+    badge_html = '<span class="badge">última</span>' if badge else ""
+    return (
+        f'<a class="row" href="/{ws_b64}/session/{safe_sid}">'
+        f'<span class="row-title">{badge_html}{safe_title}</span>'
+        f'<span class="row-time">{when}</span>'
+        f"</a>"
+    )
+
+
+def render_picker_page(
+    sessions: list,
+    ws_b64: str,
+    pinned_id: Optional[str] = None,
+) -> str:
+    """Self-contained HTML picker: session list, newest first, GET-only links."""
+    ordered = sorted(sessions, key=_session_updated, reverse=True)
+    chosen = pick_session(sessions, pinned_id)
+    chosen_id = (chosen or {}).get("id")
+    ordered = [s for s in ordered if s is not chosen]
+    if chosen is not None:
+        ordered.insert(0, chosen)
+    ordered = ordered[:_MAX_SESSIONS_IN_PAGE]
+
+    if ordered:
+        rows = "\n".join(
+            _session_row(s, ws_b64, badge=(s.get("id") == chosen_id and chosen_id))
+            for s in ordered
+        )
+        empty_html = ""
+    else:
+        rows = ""
+        empty_html = (
+            '<p class="empty">Todavía no hay sesiones.<br>'
+            "Creá la primera y volvé acá para elegir entre todas.</p>"
+        )
+
+    count = len(sessions)
+    return f"""<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sesiones — OpenCode</title>
+<style>
+:root {{ color-scheme: dark; }}
+* {{ box-sizing: border-box; margin: 0; }}
+body {{
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background: #0b0b0c; color: #ececf1; min-height: 100vh;
+}}
+.wrap {{ max-width: 680px; margin: 0 auto; padding: 16px 14px 40px; }}
+header {{ display: flex; align-items: baseline; gap: 10px; padding: 6px 2px 14px; }}
+h1 {{ font-size: 20px; font-weight: 650; letter-spacing: -0.3px; }}
+.count {{ color: #8a8a93; font-size: 13px; }}
+.badge {{
+  background: #ff5c00; color: #0b0b0c; font-size: 11px; font-weight: 700;
+  border-radius: 999px; padding: 2px 8px; margin-right: 8px;
+  vertical-align: 2px; white-space: nowrap;
+}}
+.row {{
+  display: flex; align-items: center; gap: 12px; text-decoration: none;
+  background: #17171a; border: 1px solid #232327; border-radius: 12px;
+  padding: 14px 16px; margin-bottom: 8px; min-height: 52px;
+  transition: background 0.12s ease;
+}}
+.row:hover, .row:active {{ background: #1f1f24; }}
+.row-title {{
+  flex: 1; color: #ececf1; font-size: 15px; line-height: 1.35;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; overflow-wrap: anywhere;
+}}
+.row-time {{ color: #8a8a93; font-size: 12px; white-space: nowrap; }}
+.empty {{
+  color: #8a8a93; font-size: 15px; line-height: 1.6;
+  padding: 28px 4px; text-align: center;
+}}
+.new {{
+  display: block; text-align: center; text-decoration: none; margin-top: 10px;
+  color: #ff5c00; font-size: 15px; font-weight: 600;
+  border: 1px dashed #4a3527; border-radius: 12px; padding: 13px;
+}}
+.new:hover, .new:active {{ background: #17130f; }}
+footer {{ color: #55555c; font-size: 11px; text-align: center; padding-top: 18px; }}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header><h1>Sesiones</h1><span class="count">{count} en este workspace</span></header>
+{empty_html}{rows}
+<a class="new" href="/{ws_b64}/session">+ Nueva sesión</a>
+<footer>OpenCode Continuum — lista en vivo, no crea sesiones</footer>
+</div>
+</body>
+</html>"""
+
+
 class _RedirectorServer(ThreadingHTTPServer):
     """HTTP server carrying its config for the handler."""
 
@@ -124,20 +260,29 @@ class _RedirectorServer(ThreadingHTTPServer):
 
 
 class _Handler(BaseHTTPRequestHandler):
-    """Read-only redirect logic; never proxies, never creates sessions."""
+    """Read-only picker/redirect logic; never proxies, never creates sessions."""
 
     protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt, *args):  # silence default stderr noise
         pass
 
-    def _send(self, code: int, location: Optional[str] = None, body: str = "") -> None:
+    def _send(
+        self,
+        code: int,
+        location: Optional[str] = None,
+        body: str = "",
+        content_type: str = "text/plain; charset=utf-8",
+        no_store: bool = False,
+    ) -> None:
         self.send_response(code)
         if location:
             self.send_header("Location", location)
         payload = b"" if getattr(self, "_head_mode", False) else body.encode()
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(payload)))
+        if no_store:
+            self.send_header("Cache-Control", "no-store")
         self.end_headers()
         if payload:
             self.wfile.write(payload)
@@ -149,22 +294,33 @@ class _Handler(BaseHTTPRequestHandler):
         finally:
             self._head_mode = False
 
+    def _auto_mode(self) -> bool:
+        query = (self.path or "").split("?", 1)
+        return len(query) > 1 and "auto=1" in query[1]
+
     def do_GET(self):  # noqa: N802 (http.server API)
         cfg = self.server.config  # type: ignore[attr-defined]
         path = (self.path or "/").split("?")[0]
         head = getattr(self, "_head_mode", False)
 
         if path == HEALTH_PATH:
-            self._send(200, body="ok" if not head else "")
+            self._send(200, body="ok")
             return
 
-        if path not in ("/", "/go"):
-            # Everything else belongs to OpenCode itself (served on the
-            # app port via the tunnel's catch-all rule); we only own
-            # the /go entry point.
-            self._send(404, body="" if head else "usá /go")
+        if path == LATEST_PATH or (path in PICKER_PATHS and self._auto_mode()):
+            self._serve_latest(cfg, head)
             return
 
+        if path not in PICKER_PATHS:
+            self._send(
+                404,
+                body="" if head else "usá /go (lista) o /latest (última sesión)",
+            )
+            return
+
+        self._serve_picker(cfg, head)
+
+    def _serve_latest(self, cfg: dict, head: bool) -> None:
         try:
             sessions = cfg["fetch_sessions"]()
         except Exception:
@@ -173,21 +329,42 @@ class _Handler(BaseHTTPRequestHandler):
                 body="" if head else "OpenCode API no disponible; reintentá en unos minutos.",
             )
             return
-
-        chosen = pick_session(sessions)
+        chosen = pick_session(sessions, cfg["read_pin"]())
         if chosen is None:
             self._send(302, location=f"/{cfg['ws_b64']}{NO_SESSIONS_PATH}")
             return
-
         sid = chosen.get("id")
         if not sid:
             self._send(503, body="" if head else "sesión sin id; reintentá.")
             return
         self._send(302, location=f"/{cfg['ws_b64']}/session/{sid}")
 
+    def _serve_picker(self, cfg: dict, head: bool) -> None:
+        try:
+            sessions = cfg["fetch_sessions"]()
+        except Exception:
+            self._send(
+                503,
+                content_type="text/html; charset=utf-8",
+                body=(
+                    "<!DOCTYPE html><html lang=es><head><meta charset=utf-8>"
+                    "<meta name=viewport content='width=device-width,initial-scale=1'>"
+                    "<title>Sesiones</title></head><body style="
+                    "'font-family:system-ui;background:#0b0b0c;color:#8a8a93;"
+                    "display:grid;place-items:center;height:100vh;margin:0'>"
+                    "<p style='padding:0 20px;text-align:center'>"
+                    "OpenCode API no disponible.<br>Reintentá en unos minutos.</p>"
+                    "</body></html>"
+                ),
+                no_store=True,
+            )
+            return
+        page = render_picker_page(sessions, cfg["ws_b64"], cfg["read_pin"]())
+        self._send(200, content_type="text/html; charset=utf-8", body=page, no_store=True)
+
 
 class EntryRedirector:
-    """Owns the /go redirect server lifecycle."""
+    """Owns the picker/redirect server lifecycle."""
 
     def __init__(
         self,
@@ -196,11 +373,13 @@ class EntryRedirector:
         *,
         port: Optional[int] = None,
         fetch_sessions: Optional[Callable[[], list]] = None,
+        pin_path: Optional[Path] = None,
     ):
         self.opencode_port = int(opencode_port)
         self.workspace = str(workspace)
         self._requested_port = int(port) if port is not None else None
         self._fetch = fetch_sessions
+        self._pin_path = Path(pin_path) if pin_path else None
         self._server: Optional[_RedirectorServer] = None
         self._thread: Optional[threading.Thread] = None
         self.port: Optional[int] = None
@@ -209,6 +388,11 @@ class EntryRedirector:
     def running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
 
+    def _read_pin(self) -> Optional[str]:
+        if self._pin_path is None:
+            return None
+        return load_pin(self._pin_path)
+
     def start(self) -> None:
         if self.running:
             return
@@ -216,6 +400,7 @@ class EntryRedirector:
             "ws_b64": workspace_b64(self.workspace),
             "fetch_sessions": self._fetch
             or (lambda: default_fetch_sessions(self.opencode_port, self.workspace)),
+            "read_pin": self._read_pin,
         }
         bind_port = self._requested_port or int(
             os.environ.get("OPENCODE_REDIRECTOR_PORT", str(DEFAULT_ENTRY_PORT))
