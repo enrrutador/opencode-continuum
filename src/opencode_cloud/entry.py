@@ -1,4 +1,4 @@
-"""Permanent web entry: session picker ("list, then choose") + auto-redirect.
+"""Permanent web entry: session picker (list, choose, delete) + auto-redirect.
 
 Problem this module solves:
   - OpenCode's project root creates a NEW session on every visit, so
@@ -7,21 +7,20 @@ Problem this module solves:
 
 Two cooperating pieces:
 
-1. EntryRedirector: a tiny read-only HTTP server (default port 4097).
+1. EntryRedirector: a tiny HTTP server (default port 4097).
    GET / (or /go) -> HTML picker: the list of sessions of the workspace,
-   newest first, each linking straight to that session in the SPA. It
-   never creates sessions (GET only). GET /latest (or /go?auto=1) keeps
-   the previous behavior: 302 to the session you left (pin-aware).
-   With a Cloudflare named tunnel plus a dashboard path rule
-   (host /go -> :4097, host * -> :4096), the phone bookmark
-   https://<host>/go always lands on the picker; with a quick tunnel the
-   bootstrap also exposes :4097 through its own tunnel URL.
+   newest first, each linking straight to that session in the SPA, plus a
+   delete button per row (DELETE /session/{id}, proxied to the local
+   OpenCode API). It never creates sessions. Session links are absolute
+   to the app origin when OPENCODE_APP_URL is set (quick tunnel: two
+   origins) and relative otherwise (named tunnel: single origin,
+   catch-all rule). GET /latest (or /go?auto=1) keeps the previous
+   behavior: 302 to the session you left (pin-aware).
 
 2. Session pin: pick_session() prefers the pinned session id persisted
    in the Dataset-backed metadata dir (survives restarts), falling back
-   to the most recently updated session. The notebook cell uses it to
-   print ONE stable deep link per boot, and the picker highlights the
-   same session with a badge.
+   to the most recently updated session. The picker highlights the same
+   session with a badge and clears the pin if that session is deleted.
 
 Only the standard library is used.
 """
@@ -47,6 +46,7 @@ HEALTH_PATH = "/healthz"
 NO_SESSIONS_PATH = "/session"
 LATEST_PATH = "/latest"
 PICKER_PATHS = ("/", "/go")
+DELETE_PREFIX = "/session/"
 
 _MAX_SESSIONS_IN_PAGE = 100
 _TITLE_MAX_CHARS = 140
@@ -98,6 +98,14 @@ def save_pin(path: Path, session_id: str, title: str = "") -> None:
     tmp.replace(path)
 
 
+def clear_pin(path: Path) -> None:
+    """Remove the pin (e.g. the pinned session was just deleted)."""
+    try:
+        Path(path).unlink()
+    except OSError:
+        pass
+
+
 def load_pin(path: Path) -> Optional[str]:
     try:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -107,6 +115,15 @@ def load_pin(path: Path) -> Optional[str]:
     return sid if isinstance(sid, str) and sid else None
 
 
+def _auth_header() -> Optional[str]:
+    password = os.environ.get("OPENCODE_SERVER_PASSWORD", "")
+    username = os.environ.get("OPENCODE_SERVER_USERNAME", "opencode")
+    if not password:
+        return None
+    token = base64.b64encode(f"{username}:{password}".encode()).decode()
+    return f"Basic {token}"
+
+
 def default_fetch_sessions(opencode_port: int, workspace: str) -> list:
     """GET /session?directory=... against the local OpenCode API."""
     url = (
@@ -114,16 +131,31 @@ def default_fetch_sessions(opencode_port: int, workspace: str) -> list:
         f"?directory={urllib.parse.quote(str(workspace))}"
     )
     req = urllib.request.Request(url, method="GET")
-    password = os.environ.get("OPENCODE_SERVER_PASSWORD", "")
-    username = os.environ.get("OPENCODE_SERVER_USERNAME", "opencode")
-    if password:
-        token = base64.b64encode(f"{username}:{password}".encode()).decode()
-        req.add_header("Authorization", f"Basic {token}")
+    auth = _auth_header()
+    if auth:
+        req.add_header("Authorization", auth)
     with urllib.request.urlopen(req, timeout=10) as resp:
         data = json.loads(resp.read().decode() or "null")
     if not isinstance(data, list):
         return []
     return data
+
+
+def default_delete_session(opencode_port: int, session_id: str) -> bool:
+    """DELETE /session/{id} against the local OpenCode API."""
+    url = (
+        f"http://127.0.0.1:{opencode_port}/session/"
+        f"{urllib.parse.quote(session_id, safe='')}"
+    )
+    req = urllib.request.Request(url, method="DELETE")
+    auth = _auth_header()
+    if auth:
+        req.add_header("Authorization", auth)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return 200 <= resp.status < 300
+    except Exception:
+        return False
 
 
 def format_relative_time(updated_ms: float, now: Optional[float] = None) -> str:
@@ -142,7 +174,13 @@ def format_relative_time(updated_ms: float, now: Optional[float] = None) -> str:
     return f"{dt.day} {_MONTHS[dt.month - 1]}"
 
 
-def _session_row(sess: dict, ws_b64: str, *, badge: bool) -> str:
+def _session_row(
+    sess: dict,
+    ws_b64: str,
+    *,
+    badge: bool,
+    app_base: str,
+) -> str:
     sid = str(sess.get("id") or "")
     title = str(sess.get("title") or "").strip()
     if not title:
@@ -152,19 +190,49 @@ def _session_row(sess: dict, ws_b64: str, *, badge: bool) -> str:
     when = format_relative_time(_session_updated(sess))
     safe_title = html.escape(title, quote=True)
     safe_sid = html.escape(sid, quote=True)
+    base = f"{app_base}/{ws_b64}" if app_base else f"/{ws_b64}"
     badge_html = '<span class="badge">última</span>' if badge else ""
     return (
-        f'<a class="row" href="/{ws_b64}/session/{safe_sid}">'
+        f'<div class="row-wrap">'
+        f'<a class="row" href="{base}/session/{safe_sid}">'
         f'<span class="row-title">{badge_html}{safe_title}</span>'
         f'<span class="row-time">{when}</span>'
         f"</a>"
+        f'<button class="del" type="button" data-sid="{safe_sid}" '
+        f'data-title="{safe_title}" aria-label="Eliminar sesión">'
+        f'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" '
+        f'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+        f'<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>'
+        f"</svg></button>"
+        f"</div>"
     )
+
+
+_PICKER_JS = """<script>
+document.addEventListener("click", function (e) {
+  var btn = e.target.closest(".del");
+  if (!btn) return;
+  e.preventDefault();
+  var sid = btn.getAttribute("data-sid");
+  var title = btn.getAttribute("data-title") || "esta sesión";
+  if (!confirm('Eliminar "' + title + '"?\\nNo se puede deshacer.')) return;
+  btn.disabled = true;
+  fetch("/session/" + encodeURIComponent(sid), { method: "DELETE" })
+    .then(function (r) { if (!r.ok) throw new Error(r.status); location.reload(); })
+    .catch(function () {
+      btn.disabled = false;
+      alert("No se pudo eliminar la sesión; reintentá en unos segundos.");
+    });
+});
+</script>"""
 
 
 def render_picker_page(
     sessions: list,
     ws_b64: str,
     pinned_id: Optional[str] = None,
+    *,
+    app_base: str = "",
 ) -> str:
     """Self-contained HTML picker: session list, newest first, GET-only links."""
     ordered = sorted(sessions, key=_session_updated, reverse=True)
@@ -177,7 +245,11 @@ def render_picker_page(
 
     if ordered:
         rows = "\n".join(
-            _session_row(s, ws_b64, badge=(s.get("id") == chosen_id and chosen_id))
+            _session_row(
+                s, ws_b64,
+                badge=(s.get("id") == chosen_id and bool(chosen_id)),
+                app_base=app_base,
+            )
             for s in ordered
         )
         empty_html = ""
@@ -188,6 +260,11 @@ def render_picker_page(
             "Creá la primera y volvé acá para elegir entre todas.</p>"
         )
 
+    new_href = (
+        f"{app_base}/{ws_b64}{NO_SESSIONS_PATH}"
+        if app_base
+        else f"/{ws_b64}{NO_SESSIONS_PATH}"
+    )
     count = len(sessions)
     return f"""<!DOCTYPE html>
 <html lang="es">
@@ -211,10 +288,11 @@ h1 {{ font-size: 20px; font-weight: 650; letter-spacing: -0.3px; }}
   border-radius: 999px; padding: 2px 8px; margin-right: 8px;
   vertical-align: 2px; white-space: nowrap;
 }}
+.row-wrap {{ display: flex; align-items: stretch; margin-bottom: 8px; }}
 .row {{
   display: flex; align-items: center; gap: 12px; text-decoration: none;
   background: #17171a; border: 1px solid #232327; border-radius: 12px;
-  padding: 14px 16px; margin-bottom: 8px; min-height: 52px;
+  padding: 14px 16px; flex: 1; min-width: 0; min-height: 52px;
   transition: background 0.12s ease;
 }}
 .row:hover, .row:active {{ background: #1f1f24; }}
@@ -224,6 +302,15 @@ h1 {{ font-size: 20px; font-weight: 650; letter-spacing: -0.3px; }}
   overflow: hidden; overflow-wrap: anywhere;
 }}
 .row-time {{ color: #8a8a93; font-size: 12px; white-space: nowrap; }}
+.del {{
+  flex: none; width: 46px; margin-left: 8px; border: 1px solid #232327;
+  border-radius: 12px; background: #17171a; color: #6f6f78;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; transition: color 0.12s ease, border-color 0.12s ease;
+}}
+.del svg {{ width: 16px; height: 16px; }}
+.del:hover {{ color: #ff4d4f; border-color: #4a2325; }}
+.del:disabled {{ opacity: 0.4; }}
 .empty {{
   color: #8a8a93; font-size: 15px; line-height: 1.6;
   padding: 28px 4px; text-align: center;
@@ -241,9 +328,10 @@ footer {{ color: #55555c; font-size: 11px; text-align: center; padding-top: 18px
 <div class="wrap">
 <header><h1>Sesiones</h1><span class="count">{count} en este workspace</span></header>
 {empty_html}{rows}
-<a class="new" href="/{ws_b64}/session">+ Nueva sesión</a>
+<a class="new" href="{new_href}">+ Nueva sesión</a>
 <footer>OpenCode Continuum — lista en vivo, no crea sesiones</footer>
 </div>
+{_PICKER_JS}
 </body>
 </html>"""
 
@@ -260,7 +348,7 @@ class _RedirectorServer(ThreadingHTTPServer):
 
 
 class _Handler(BaseHTTPRequestHandler):
-    """Read-only picker/redirect logic; never proxies, never creates sessions."""
+    """Picker/redirect logic; never proxies the SPA, never creates sessions."""
 
     protocol_version = "HTTP/1.1"
 
@@ -320,6 +408,32 @@ class _Handler(BaseHTTPRequestHandler):
 
         self._serve_picker(cfg, head)
 
+    def do_DELETE(self):  # noqa: N802 (http.server API)
+        cfg = self.server.config  # type: ignore[attr-defined]
+        raw_path = (self.path or "/").split("?")[0]
+        if not raw_path.startswith(DELETE_PREFIX):
+            self._send_json(404, {"ok": False, "error": "ruta_invalida"})
+            return
+        sid = urllib.parse.unquote(raw_path[len(DELETE_PREFIX):])
+        if not sid or "/" in sid:
+            self._send_json(404, {"ok": False, "error": "ruta_invalida"})
+            return
+        deleted = cfg["delete_session"](sid)
+        if not deleted:
+            self._send_json(502, {"ok": False, "error": "no_se_pudo_borrar"})
+            return
+        if cfg["read_pin"]() == sid:
+            cfg["clear_pin"]()
+        self._send_json(200, {"ok": True, "id": sid})
+
+    def _send_json(self, code: int, payload: dict) -> None:
+        self._send(
+            code,
+            body=json.dumps(payload),
+            content_type="application/json",
+            no_store=True,
+        )
+
     def _serve_latest(self, cfg: dict, head: bool) -> None:
         try:
             sessions = cfg["fetch_sessions"]()
@@ -337,7 +451,9 @@ class _Handler(BaseHTTPRequestHandler):
         if not sid:
             self._send(503, body="" if head else "sesión sin id; reintentá.")
             return
-        self._send(302, location=f"/{cfg['ws_b64']}/session/{sid}")
+        app_base = cfg["read_app_base"]()
+        prefix = f"{app_base}/{cfg['ws_b64']}" if app_base else f"/{cfg['ws_b64']}"
+        self._send(302, location=f"{prefix}/session/{sid}")
 
     def _serve_picker(self, cfg: dict, head: bool) -> None:
         try:
@@ -359,8 +475,17 @@ class _Handler(BaseHTTPRequestHandler):
                 no_store=True,
             )
             return
-        page = render_picker_page(sessions, cfg["ws_b64"], cfg["read_pin"]())
+        page = render_picker_page(
+            sessions,
+            cfg["ws_b64"],
+            cfg["read_pin"](),
+            app_base=cfg["read_app_base"](),
+        )
         self._send(200, content_type="text/html; charset=utf-8", body=page, no_store=True)
+
+
+def _env_app_base() -> str:
+    return os.environ.get("OPENCODE_APP_URL", "").strip().rstrip("/")
 
 
 class EntryRedirector:
@@ -373,12 +498,14 @@ class EntryRedirector:
         *,
         port: Optional[int] = None,
         fetch_sessions: Optional[Callable[[], list]] = None,
+        delete_session: Optional[Callable[[str], bool]] = None,
         pin_path: Optional[Path] = None,
     ):
         self.opencode_port = int(opencode_port)
         self.workspace = str(workspace)
         self._requested_port = int(port) if port is not None else None
         self._fetch = fetch_sessions
+        self._delete = delete_session
         self._pin_path = Path(pin_path) if pin_path else None
         self._server: Optional[_RedirectorServer] = None
         self._thread: Optional[threading.Thread] = None
@@ -393,6 +520,10 @@ class EntryRedirector:
             return None
         return load_pin(self._pin_path)
 
+    def _clear_pin(self) -> None:
+        if self._pin_path is not None:
+            clear_pin(self._pin_path)
+
     def start(self) -> None:
         if self.running:
             return
@@ -400,11 +531,18 @@ class EntryRedirector:
             "ws_b64": workspace_b64(self.workspace),
             "fetch_sessions": self._fetch
             or (lambda: default_fetch_sessions(self.opencode_port, self.workspace)),
+            "delete_session": self._delete
+            or (lambda sid: default_delete_session(self.opencode_port, sid)),
             "read_pin": self._read_pin,
+            "clear_pin": self._clear_pin,
+            "read_app_base": _env_app_base,
         }
-        bind_port = self._requested_port or int(
-            os.environ.get("OPENCODE_REDIRECTOR_PORT", str(DEFAULT_ENTRY_PORT))
-        )
+        if self._requested_port is not None:
+            bind_port = self._requested_port
+        else:
+            bind_port = int(
+                os.environ.get("OPENCODE_REDIRECTOR_PORT", str(DEFAULT_ENTRY_PORT))
+            )
         self._server = _RedirectorServer(("127.0.0.1", bind_port), _Handler, cfg)
         self.port = self._server.server_address[1]
         self._thread = threading.Thread(

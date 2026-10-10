@@ -1,4 +1,4 @@
-"""Tests for entry.py: /go redirector + session pin (no network needed)."""
+"""Tests for entry.py: session picker + delete + pin (no network needed)."""
 
 import http.client
 import json
@@ -7,6 +7,7 @@ from pathlib import Path
 
 from opencode_cloud.entry import (
     EntryRedirector,
+    clear_pin,
     load_pin,
     pick_session,
     save_pin,
@@ -330,3 +331,155 @@ def test_pin_json_shape(tmp_path: Path):
     save_pin(pin, "s1", "T")
     data = json.loads(pin.read_text(encoding="utf-8"))
     assert data == {"session_id": "s1", "title": "T"}
+
+
+def test_clear_pin_removes_file(tmp_path: Path):
+    pin = tmp_path / "session.json"
+    save_pin(pin, "s1", "T")
+    clear_pin(pin)
+    assert load_pin(pin) is None
+    clear_pin(pin)
+
+
+def _delete(port: int, path: str):
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    conn.request("DELETE", path)
+    resp = conn.getresponse()
+    body = resp.read().decode()
+    conn.close()
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        payload = {}
+    return resp.status, payload
+
+
+def test_delete_calls_deleter_with_id():
+    calls = []
+    r = EntryRedirector(
+        4096, "/kaggle/working/ws", port=0,
+        fetch_sessions=lambda: SESSIONS,
+        delete_session=lambda sid: calls.append(sid) or True,
+    )
+    r.start()
+    try:
+        status, payload = _delete(r.port, "/session/old")
+        assert status == 200
+        assert payload == {"ok": True, "id": "old"}
+        assert calls == ["old"]
+    finally:
+        r.stop()
+
+
+def test_delete_clears_pin_when_pinned_session_dies():
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as td:
+        pin_file = Path(td) / "session.json"
+        save_pin(pin_file, "b", "B")
+        r = EntryRedirector(
+            4096, "/kaggle/working/ws", port=0,
+            fetch_sessions=lambda: SESSIONS,
+            delete_session=lambda sid: True,
+            pin_path=pin_file,
+        )
+        r.start()
+        try:
+            status, _ = _delete(r.port, "/session/b")
+            assert status == 200
+            assert load_pin(pin_file) is None
+        finally:
+            r.stop()
+
+
+def test_delete_keeps_pin_when_other_session_dies():
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as td:
+        pin_file = Path(td) / "session.json"
+        save_pin(pin_file, "b", "B")
+        r = EntryRedirector(
+            4096, "/kaggle/working/ws", port=0,
+            fetch_sessions=lambda: SESSIONS,
+            delete_session=lambda sid: True,
+            pin_path=pin_file,
+        )
+        r.start()
+        try:
+            status, _ = _delete(r.port, "/session/latest")
+            assert status == 200
+            assert load_pin(pin_file) == "b"
+        finally:
+            r.stop()
+
+
+def test_delete_failure_returns_502():
+    r = EntryRedirector(
+        4096, "/kaggle/working/ws", port=0,
+        fetch_sessions=lambda: SESSIONS,
+        delete_session=lambda sid: False,
+    )
+    r.start()
+    try:
+        status, payload = _delete(r.port, "/session/old")
+        assert status == 502
+        assert payload["ok"] is False
+    finally:
+        r.stop()
+
+
+def test_delete_invalid_paths_404():
+    r = _get_free_redirector(lambda: SESSIONS)
+    try:
+        for path in ("/session", "/session/", "/session/a/b", "/otro/x"):
+            status, _ = _delete(r.port, path)
+            assert status == 404, path
+    finally:
+        r.stop()
+
+
+def test_picker_html_has_delete_buttons_and_js():
+    r = _get_free_redirector(lambda: SESSIONS)
+    try:
+        _, _, body = _get_picker(r.port)
+        assert body.count('class="del"') == 3
+        assert 'data-sid="old"' in body
+        assert "DELETE" in body
+        assert "confirm(" in body
+    finally:
+        r.stop()
+
+
+def test_picker_absolute_links_when_app_url_set(monkeypatch):
+    monkeypatch.setenv("OPENCODE_APP_URL", "https://app.example.com/")
+    r = _get_free_redirector(lambda: SESSIONS)
+    try:
+        _, _, body = _get_picker(r.port)
+        ws = workspace_b64("/kaggle/working/ws")
+        assert f'href="https://app.example.com/{ws}/session/latest"' in body
+        assert f'href="https://app.example.com/{ws}/session"' in body
+    finally:
+        r.stop()
+
+
+def test_picker_relative_links_without_app_url(monkeypatch):
+    monkeypatch.delenv("OPENCODE_APP_URL", raising=False)
+    r = _get_free_redirector(lambda: SESSIONS)
+    try:
+        _, _, body = _get_picker(r.port)
+        ws = workspace_b64("/kaggle/working/ws")
+        assert f'href="/{ws}/session/latest"' in body
+    finally:
+        r.stop()
+
+
+def test_latest_redirect_absolute_when_app_url_set(monkeypatch):
+    monkeypatch.setenv("OPENCODE_APP_URL", "https://app.example.com")
+    r = _get_free_redirector(lambda: SESSIONS)
+    try:
+        status, headers, _ = _request(r.port, "/latest")
+        ws = workspace_b64("/kaggle/working/ws")
+        assert status == 302
+        assert headers["Location"] == f"https://app.example.com/{ws}/session/latest"
+    finally:
+        r.stop()

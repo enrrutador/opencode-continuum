@@ -281,6 +281,9 @@ def bootstrap(
         if cf_info.available:
             info = cf_info
             _log("Access: Cloudflare Tunnel READY")
+            if cf_info.url:
+                os.environ["OPENCODE_APP_URL"] = cf_info.url.rstrip("/")
+                _log(f"Picker links point to app origin: {cf_info.url}")
         else:
             _log(
                 "Access: Cloudflare unavailable; "
@@ -435,6 +438,13 @@ def bootstrap(
                     ).resolve()
 
                 state["access"] = reval
+
+                if (
+                    reval.available
+                    and reval.url
+                    and getattr(reval, "provider", "") == "cloudflare_quick_tunnel"
+                ):
+                    os.environ["OPENCODE_APP_URL"] = reval.url.rstrip("/")
 
                 _log(
                     f"Watchdog: access revalidate "

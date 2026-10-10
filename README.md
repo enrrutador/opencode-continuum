@@ -404,10 +404,14 @@ primero, y vos elegís en cuál seguir (como la app de escritorio).
 1. **Picker `/go`** (`src/opencode_cloud/entry.py`): servidor chico y de
    solo lectura en el puerto 4097 que renderiza **en vivo** la lista de
    sesiones (título + antigüedad, badge `última` en la pinneada) con links
-   directos a cada una. Nunca crea sesiones. Si la API está caída responde
-   503 (reintentar en unos minutos basta). `/latest` (o `/go?auto=1`)
-   mantiene el comportamiento anterior: 302 directo a la sesión que
-   dejaste, sin lista.
+   directos a cada una y **botón de eliminar por fila** (confirmación
+   nativa; borra vía la API local y limpia el pin si era la pinneada).
+   Nunca crea sesiones. Los links son absolutos al origen del app cuando
+   `OPENCODE_APP_URL` está seteado (quick tunnel: dos orígenes) y relativos
+   si no (túnel nombrado: un solo origen, regla catch-all). Si la API está
+   caída responde 503 (reintentar en unos minutos basta). `/latest` (o
+   `/go?auto=1`) mantiene el comportamiento anterior: 302 directo a la
+   sesión que dejaste, sin lista.
 2. **Pin de sesión**: persistido en el Dataset
    (`opencode_cloud/metadata/session.json`); el picker lo usa para el badge
    `última` cuando el restore aplana los timestamps. Si arrancaste un chat
