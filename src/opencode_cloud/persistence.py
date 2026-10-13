@@ -143,6 +143,82 @@ def unify_opencode_sessions_to_latest_project(opencode_db: Path) -> dict:
         return {"migrated": 0, "error": f"{type(e).__name__}: {e}"}
 
 
+def latest_session_id(opencode_db: Path) -> Optional[str]:
+    """Best-effort: id de la sesión más reciente en opencode.db.
+
+    Nunca lanza. Retorna None si no hay DB o el schema no coincide.
+    """
+    try:
+        import sqlite3
+
+        opencode_db = Path(opencode_db)
+        if not opencode_db.is_file():
+            return None
+        con = sqlite3.connect(str(opencode_db), timeout=10)
+        try:
+            cur = con.cursor()
+            # Esquema típico: session(id, ...). rowid DESC = más reciente.
+            try:
+                cur.execute("SELECT id FROM session ORDER BY rowid DESC LIMIT 1")
+            except Exception:
+                return None
+            row = cur.fetchone()
+            if row and row[0]:
+                return str(row[0])
+            return None
+        finally:
+            try:
+                con.close()
+            except Exception:
+                pass
+    except Exception:
+        return None
+
+
+def unify_live_dbs(opencode_data: Path, xdg_root: Optional[Path] = None) -> dict:
+    """Unifica todas las copias vivas conocidas de opencode.db.
+
+    Llamar antes de cada checkpoint local para que el .db copiado ya
+    lleve las sesiones re-asignadas. Best-effort, nunca lanza.
+    """
+    total = 0
+    dbs: list[Path] = []
+    try:
+        opencode_data = Path(opencode_data)
+        dbs.append(opencode_data / "opencode.db")
+        try:
+            dbs.extend(opencode_data.rglob("opencode.db"))
+        except Exception:
+            pass
+        if xdg_root is not None:
+            try:
+                xdg_root = Path(xdg_root)
+                dbs.append(
+                    xdg_root / "share" / "opencode" / "opencode.db"
+                )
+            except Exception:
+                pass
+        seen: set[str] = set()
+        uniq: list[Path] = []
+        for db in dbs:
+            try:
+                key = str(db.resolve())
+            except Exception:
+                key = str(db)
+            if key not in seen:
+                seen.add(key)
+                uniq.append(db)
+        for db in uniq[:5]:
+            try:
+                res = unify_opencode_sessions_to_latest_project(db)
+                total += int(res.get("migrated", 0) or 0)
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return {"migrated": total}
+
+
 def build_integrity_manifest(
     root: Path,
     *,

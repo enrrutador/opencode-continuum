@@ -26,6 +26,29 @@ from .access import AccessInfo
 
 CLOUDFLARED_VERSION = "2025.2.1"
 
+
+def _persistent_bin_dir() -> Path:
+    """Dir persistente en /kaggle/working (sobrevive restart de kernel).
+
+    Patrón tomado de kagglevstunnel / vscode-tunnel: guardar binarios
+    en /kaggle/working en vez de $HOME (efímero). Si no estamos en Kaggle,
+    cae a ~/.local/bin.
+    """
+    for cand in (
+        Path("/kaggle/working/opencode_cloud/bin"),
+        Path(os.environ.get("OPENCODE_CLOUD_WORKDIR", "")) / "opencode_cloud" / "bin"
+        if os.environ.get("OPENCODE_CLOUD_WORKDIR")
+        else None,
+    ):
+        if cand is None:
+            continue
+        try:
+            cand.mkdir(parents=True, exist_ok=True)
+            return cand
+        except OSError:
+            continue
+    return Path.home() / ".local" / "bin"
+
 _URL_RE = re.compile(
     r"https://[a-zA-Z0-9.-]+\.(?:trycloudflare\.com|cfargotunnel\.com)[^\s]*"
 )
@@ -44,22 +67,48 @@ def wait_for_port(host: str, port: int, timeout: float = 60.0) -> bool:
     return False
 
 
+def _download_cloudflared(url: str, *, timeout: int = 120) -> bytes:
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "opencode-continuum/5.0"
+        },
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read()
+
+
 def ensure_cloudflared(bin_dir: Optional[Path] = None) -> str:
+    # 0. Override explícito (tests / custom).
+    override = os.environ.get("OPENCODE_CLOUDFLARED_BIN", "").strip()
+    if override:
+        p = Path(override)
+        if p.is_file() and os.access(p, os.X_OK):
+            return str(p)
+
     existing = shutil.which("cloudflared")
 
     if existing:
         return existing
 
-    bin_dir = Path(
-        bin_dir or Path.home() / ".local" / "bin"
-    )
+    # 1. Reuso persistente: /kaggle/working primero (sobrevive restart),
+    #    luego el dir pedido, luego legacy ~/.local/bin.
+    candidates: list[Path] = []
+    if bin_dir is not None:
+        candidates.append(Path(bin_dir))
+    try:
+        candidates.append(_persistent_bin_dir())
+    except Exception:
+        pass
+    candidates.append(Path.home() / ".local" / "bin")
 
-    bin_dir.mkdir(parents=True, exist_ok=True)
-
-    target = bin_dir / "cloudflared"
-
-    if target.exists() and os.access(target, os.X_OK):
-        return str(target)
+    for cand in candidates:
+        try:
+            target = cand / "cloudflared"
+            if target.is_file() and os.access(target, os.X_OK):
+                return str(target)
+        except OSError:
+            continue
 
     system = platform.system().lower()
     machine = platform.machine().lower()
@@ -78,29 +127,48 @@ def ensure_cloudflared(bin_dir: Optional[Path] = None) -> str:
             f"Unsupported architecture: {machine}"
         )
 
-    url = (
+    pinned_url = (
         "https://github.com/cloudflare/cloudflared/releases/download/"
         f"{CLOUDFLARED_VERSION}/cloudflared-linux-{arch}"
     )
-
-    req = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": "opencode-continuum/5.0"
-        },
+    latest_url = (
+        "https://github.com/cloudflare/cloudflared/releases/latest/download/"
+        f"cloudflared-linux-{arch}"
     )
 
-    with urllib.request.urlopen(req, timeout=120) as resp:
-        data = resp.read()
-
-    if len(data) < 1_000_000:
+    data: Optional[bytes] = None
+    last_error: Optional[Exception] = None
+    for url in (pinned_url, latest_url):
+        try:
+            data = _download_cloudflared(url)
+            if len(data) < 1_000_000:
+                raise RuntimeError("cloudflared download too small")
+            break
+        except Exception as exc:  # pin 404 -> probar latest
+            last_error = exc
+            data = None
+            continue
+    if data is None:
         raise RuntimeError(
-            "cloudflared download too small"
+            f"cloudflared download failed: {type(last_error).__name__ if last_error else 'unknown'}"
         )
+
+    # Destino: primer candidato escribible (persistente primero).
+    target: Optional[Path] = None
+    dest_dir: Optional[Path] = None
+    for cand in candidates:
+        try:
+            cand.mkdir(parents=True, exist_ok=True)
+            target = cand / "cloudflared"
+            dest_dir = cand
+            break
+        except OSError:
+            continue
+    assert target is not None and dest_dir is not None
 
     fd, tmp_name = tempfile.mkstemp(
         prefix="cloudflared_",
-        dir=str(bin_dir),
+        dir=str(dest_dir),
     )
 
     os.close(fd)

@@ -234,6 +234,26 @@ def bootstrap(
 
     _log(f"OpenCode is listening on 127.0.0.1:{opencode_port}")
 
+    # B1: verificación real de UI (más que TCP). No bloquea, solo informa.
+    ui_health: dict = {"ok": False, "status": "not_checked"}
+    try:
+        from opencode_cloud.health import verify_local_ui
+
+        ui_health = verify_local_ui(opencode_port)
+        _log(
+            f"UI health: {ui_health.get('status')} "
+            f"(http={ui_health.get('http_status')})"
+        )
+        if not ui_health.get("ok"):
+            _log(f"UI health detalle: {ui_health.get('message')}")
+    except Exception as e:
+        ui_health = {
+            "ok": False,
+            "status": "health_check_failed",
+            "message": type(e).__name__,
+        }
+        _log(f"UI health skipped: {type(e).__name__}")
+
     # Permanent /go entry: session picker at / (and /go), auto-redirect
     # at /latest (and /go?auto=1). Read-only; never creates sessions.
     # Disable with OPENCODE_REDIRECTOR=0.
@@ -361,6 +381,14 @@ def bootstrap(
     checkpoint_lock = threading.Lock()
 
     def local_checkpoint(extra: Optional[dict] = None) -> dict:
+        # C2: unificar sesiones huérfanas en cada checkpoint, no solo en
+        # bootstrap. Best-effort, nunca bloquea.
+        try:
+            from opencode_cloud.persistence import unify_live_dbs
+
+            unify_live_dbs(paths.opencode_data, paths.xdg_root)
+        except Exception:
+            pass
         meta = store.save_local(
             opencode_data=paths.opencode_data,
             opencode_config=paths.opencode_config,
@@ -368,6 +396,24 @@ def bootstrap(
             xdg_root=paths.xdg_root,
             extra_meta=extra,
         )
+        try:
+            from opencode_cloud.entry import save_pin
+            from opencode_cloud.persistence import latest_session_id
+
+            pin_path = store.metadata_dir / "session.json"
+            for cand in (
+                paths.opencode_data / "opencode.db",
+                paths.xdg_root / "share" / "opencode" / "opencode.db",
+            ):
+                sid = latest_session_id(cand)
+                if sid:
+                    try:
+                        save_pin(pin_path, sid)
+                    except Exception:
+                        pass
+                    break
+        except Exception:
+            pass
         ckpt.record_local_checkpoint()
         ckpt.observe_paths(paths.workspace, paths.opencode_data)
         return meta
@@ -514,6 +560,13 @@ def bootstrap(
         except Exception as e:
             _log(f"Shutdown: picker tunnel stop error: {type(e).__name__}")
         try:
+            vt = state.get("vscode_tunnel")
+            if vt is not None:
+                vt.stop()
+                _log("Shutdown: vscode tunnel stopped")
+        except Exception as e:
+            _log(f"Shutdown: vscode stop error: {type(e).__name__}")
+        try:
             scheduler.shutdown_checkpoint()
         except Exception as e:
             _log(f"Shutdown: checkpoint error: {type(e).__name__}")
@@ -542,6 +595,27 @@ def bootstrap(
 
     state["shutdown"] = _on_shutdown
 
+    # A3: VSCode Tunnel opcional, apagado por defecto.
+    vscode_info: dict = {"enabled": False}
+    if os.environ.get("OPENCODE_VSCODE_TUNNEL", "0") == "1":
+        try:
+            from opencode_cloud.vscode_tunnel import VSCodeTunnel
+
+            vt = VSCodeTunnel(
+                log_path=paths.logs / "vscode-tunnel.log",
+            )
+            vscode_info = vt.start()
+            vscode_info["enabled"] = True
+            state["vscode_tunnel"] = vt
+            _log(f"VSCode tunnel: {vscode_info.get('status')}")
+        except Exception as e:
+            vscode_info = {
+                "enabled": True,
+                "running": False,
+                "error": type(e).__name__,
+            }
+            _log(f"VSCode tunnel skipped: {type(e).__name__}")
+
     status = "READY"
     if not access_info.get("available") and enable_access_layer:
         status = "OPENCODE_RUNNING_PROXY_UNAVAILABLE"
@@ -565,6 +639,8 @@ def bootstrap(
         "model": selected_model,
         "dataset_id": did,
         "web_access": access_info,
+        "ui_health": ui_health,
+        "vscode_tunnel": vscode_info,
         "checkpoint_state": ckpt.get_state(),
         "watchdog": watchdog.status(),
         "scheduler": scheduler.status(),
