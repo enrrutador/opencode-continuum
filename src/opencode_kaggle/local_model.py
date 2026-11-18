@@ -132,11 +132,11 @@ def verify_model(provider_id: str, model_id: str) -> bool:
     return visible
 
 
-def current_tunnel_url() -> str:
-    """Last quick-tunnel URL from the continuum log (empty if unavailable)."""
+def current_tunnel_url(log_name: str = "cloudflare-tunnel.log") -> str:
+    """Last quick-tunnel URL from a continuum log (empty if unavailable)."""
     import re
 
-    log_path = Path("/kaggle/working/opencode_cloud/logs/cloudflare-tunnel.log")
+    log_path = Path("/kaggle/working/opencode_cloud/logs") / log_name
     if not log_path.exists():
         return ""
     urls = re.findall(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com", log_path.read_text())
