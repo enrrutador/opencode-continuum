@@ -71,6 +71,11 @@ def get_paths(runtime: Optional[str] = None) -> RuntimePaths:
     )
 
 
+def opencode_config_file(paths: RuntimePaths) -> Path:
+    """Config file OpenCode actually loads: XDG_CONFIG_HOME/opencode/opencode.jsonc."""
+    return paths.xdg_config / "opencode" / "opencode.jsonc"
+
+
 def ensure_dirs(paths: RuntimePaths) -> None:
     for p in (
         paths.cloud_root,

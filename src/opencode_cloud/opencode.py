@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -157,6 +158,95 @@ def write_opencode_config(
         json.dumps(final_cfg, indent=2, ensure_ascii=False), encoding="utf-8"
     )
     return config_path
+
+
+def _strip_jsonc(text: str) -> str:
+    """Remove // and /* */ comments plus trailing commas, respecting strings."""
+    out: list[str] = []
+    i = 0
+    n = len(text)
+    in_string = False
+    escaped = False
+    while i < n:
+        ch = text[i]
+        if in_string:
+            out.append(ch)
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            i += 1
+        elif ch == '"':
+            in_string = True
+            out.append(ch)
+            i += 1
+        elif text.startswith("//", i):
+            while i < n and text[i] not in "\r\n":
+                i += 1
+        elif text.startswith("/*", i):
+            i += 2
+            while i < n and not text.startswith("*/", i):
+                i += 1
+            i = min(i + 2, n)
+        else:
+            out.append(ch)
+            i += 1
+    return re.sub(r",(\s*[}\]])", r"\1", "".join(out))
+
+
+def read_jsonc(path: Path) -> dict:
+    """Read a JSON/JSONC config file, returning {} on missing or invalid content."""
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    for candidate in (text, _strip_jsonc(text)):
+        try:
+            data = json.loads(candidate)
+            if isinstance(data, dict):
+                return data
+        except json.JSONDecodeError:
+            continue
+    return {}
+
+
+def write_local_model_config(
+    config_path: Path,
+    *,
+    provider_id: str = "local",
+    name: str,
+    base_url: str,
+    models: dict[str, str],
+    default_model_id: Optional[str] = None,
+) -> Path:
+    """Inject an OpenAI-compatible provider into OpenCode's real config file.
+
+    OpenCode reads ``$XDG_CONFIG_HOME/opencode/opencode.jsonc``. Continuum's
+    ``write_opencode_config`` writes ``$XDG_CONFIG_HOME/opencode.json``, which
+    OpenCode ignores, so local models must be added to the jsonc file to be
+    selectable in the UI.
+
+    Existing providers and keys are preserved. No secrets are stored: only the
+    base URL of an already-local server is referenced.
+    """
+    if not provider_id or not models:
+        raise ValueError("provider_id and models are required")
+
+    path = Path(config_path)
+    cfg = read_jsonc(path)
+    cfg.setdefault("provider", {})[provider_id] = {
+        "name": name,
+        "npm": "@ai-sdk/openai-compatible",
+        "options": {"baseURL": base_url.rstrip("/") + "/v1"},
+        "models": {mid: {"name": label} for mid, label in models.items()},
+    }
+    if default_model_id:
+        cfg["model"] = f"{provider_id}/{default_model_id}"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    return path
 
 
 def start_opencode_web(

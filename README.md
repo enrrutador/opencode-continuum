@@ -294,6 +294,8 @@ Shutdown es **idempotente**.
    - `NVIDIA_API_KEY`
    - `OPENCODE_CLOUD_DATASET` = `tu-usuario/opencode-continuum-persistence`
    - (opcional) `GITHUB_TOKEN`, `GITHUB_REPO`, `OPENCODE_SERVER_PASSWORD`
+   - (opcional, modelo local) `LOCAL_MODEL_ID`, `LOCAL_MODEL_PORT`,
+     `LOCAL_MODEL_PROVIDER`, `LOCAL_MODEL_DEFAULT=1` o `LOCAL_MODEL_BASE_URL`
 
 ### 2. Ejecutar
 
@@ -309,6 +311,39 @@ print(info)
 ```
 
 O abrir el notebook [`kaggle/Workstation.ipynb`](kaggle/Workstation.ipynb).
+
+### Modelo local seleccionable en OpenCode
+
+Con **Accelerator: GPU T4 x2** (o un servidor OpenAI-compatible ya corriendo),
+la celda `Modelo local 9B` de `Workstation.ipynb` —o
+`install_local_model()` desde cualquier notebook— hace lo siguiente:
+
+1. Sirve el modelo con `vllm serve` en `localhost:8000` (API OpenAI-compatible).
+2. Inyecta el provider en **`$XDG_CONFIG_HOME/opencode/opencode.jsonc`**, que es
+   el archivo que OpenCode lee realmente. El config que escribe continuum
+   (`$XDG_CONFIG_HOME/opencode.json`) es ignorado por OpenCode, por eso el
+   provider debe escribirse en el `.jsonc`.
+3. Reinicia OpenCode; el watchdog lo relanza con el config nuevo y el modelo
+   aparece en `/models` como `kaggle-deepseek/<model_id>`.
+
+```python
+from opencode_kaggle.local_model import install_local_model
+
+modelo_listo = install_local_model(opencode_port=4096)  # True = visible en /models
+```
+
+Variables opcionales (también Kaggle Secrets):
+
+| Variable | Default | Uso |
+|---|---|---|
+| `LOCAL_MODEL_ID` | `xtools-at/DeepSeek-V4-Pro-Qwen3.5-9B-UNCENSORED-heretic` | modelo servido por vLLM |
+| `LOCAL_MODEL_BASE_URL` | — | usar servidor existente en vez de levantar vLLM |
+| `LOCAL_MODEL_PORT` | `8000` | puerto del servidor local |
+| `LOCAL_MODEL_PROVIDER` | `kaggle-deepseek` | id del provider en OpenCode |
+| `LOCAL_MODEL_DEFAULT=1` | — | seleccionar el modelo local por defecto |
+
+El config queda dentro del checkpoint del Dataset (no se pisan los providers
+existentes) y no guarda secretos: sólo la URL base del servidor local.
 
 ### 3. Resultado esperado
 
@@ -393,39 +428,29 @@ ruff check src/
 | Puerto local; acceso vía Jupyter Proxy | URL de sesión; regenerar en cada runtime |
 | Watchdog muere con el runtime | Continuidad = bootstrap + Dataset en el siguiente kernel |
 
-## Entrada: picker de sesiones (`/go`) y link directo (`/latest`)
+## Un solo link permanente (`/go`)
 
 El problema de las sesiones caóticas tenía dos causas: la raíz del proyecto
 crea una sesión **nueva** en cada visita (los links se multiplicaban), y las
-URLs de quick tunnel cambian en cada arranque. La entrada ahora es un
-**picker**: al abrir, la lista de sesiones del workspace, la más reciente
-primero, y vos elegís en cuál seguir (como la app de escritorio).
+URLs de quick tunnel cambian en cada arranque. Solución en tres partes:
 
-1. **Picker `/go`** (`src/opencode_cloud/entry.py`): servidor chico y de
-   solo lectura en el puerto 4097 que renderiza **en vivo** la lista de
-   sesiones (título + antigüedad, badge `última` en la pinneada) con links
-   directos a cada una y **botón de eliminar por fila** (confirmación
-   nativa; borra vía la API local y limpia el pin si era la pinneada).
-   Nunca crea sesiones. Los links son absolutos al origen del app cuando
-   `OPENCODE_APP_URL` está seteado (quick tunnel: dos orígenes) y relativos
-   si no (túnel nombrado: un solo origen, regla catch-all). Si la API está
-   caída responde 503 (reintentar en unos minutos basta). `/latest` (o
-   `/go?auto=1`) mantiene el comportamiento anterior: 302 directo a la
-   sesión que dejaste, sin lista.
-2. **Pin de sesión**: persistido en el Dataset
-   (`opencode_cloud/metadata/session.json`); el picker lo usa para el badge
-   `última` cuando el restore aplana los timestamps. Si arrancaste un chat
-   más nuevo, gana ese.
-3. **Acceso**: con quick tunnel el bootstrap levanta un **segundo túnel
-   dedicado al picker** (la URL raíz de ese túnel ES la lista) y la celda la
-   imprime como link primario; desactivable con `OPENCODE_PICKER_TUNNEL=0`.
-   Con túnel nombrado (setup único, dashboard de Cloudflare Zero Trust):
-   `https://opencode.tudominio.com` con **Path `/go`** → `http://localhost:4097`
-   y el mismo hostname con **Path `*`** → `http://localhost:4096` (la regla
-   más específica gana). El bookmark `/go` aterriza **siempre en la lista**,
-   en cualquier dispositivo, para siempre.
+1. **Redirector `/go`** (`src/opencode_cloud/entry.py`): servidor chico y de
+   solo lectura en el puerto 4097 que resuelve **en vivo** tu sesión más
+   reciente y redirige a ella. Nunca crea sesiones. Si la API está caída
+   responde 503 (reintentar en unos minutos basta).
+2. **Pin de sesión**: el link impreso por la celda apunta a tu última sesión
+   activa, con pin persistido en el Dataset
+   (`opencode_cloud/metadata/session.json`) para desempatar cuando el
+   restore aplana los timestamps. Si arrancaste un chat más nuevo, gana ese.
+3. **Bookmark fijo** (setup único, requiere túnel nombrado): en el dashboard
+   de Cloudflare Zero Trust, con el mismo túnel, agregá DOS public hostnames
+   al mismo dominio — `https://opencode.tudominio.com` con **Path `/go`** →
+   servicio `http://localhost:4097`, y el mismo hostname con **Path `*`** →
+   `http://localhost:4096` (la regla más específica gana). Guardate
+   `https://opencode.tudominio.com/go` en el teléfono: **siempre** aterriza
+   en la sesión tal cual la dejaste, en cualquier dispositivo, para siempre.
 
-Sin túnel nombrado, la celda imprime los links por arranque (quick tunnel
+Sin túnel nombrado, la celda imprime un único link por arranque (quick tunnel
 cambia de URL por diseño: el bookmark permanente necesita el túnel nombrado).
 
 ---
@@ -451,8 +476,7 @@ sesión**: el kernel corre en los servidores de Kaggle, no en tu teléfono.
    el hostname es fijo y sobrevive a muertes y relanzamientos del kernel.
    Guardalo como bookmark; con quick tunnel la URL cambia en cada arranque
    y al volver encontrarías una URL muerta.
-2. Trabajás, bloqueás, volvés cuando quieras y recargás el bookmark: abre el
-   picker de sesiones y tocás la que quieras continuar (o `+ Nueva sesión`).
+2. Trabajás, bloqueás, volvés cuando quieras y recargás el bookmark.
 3. Si al volver no responde, **no toques el cuaderno**: el guardián puede
    estar relanzando el kernel (ventana de ~20-40 min). Esperá unos minutos
    y recargá. El trabajo se restaura del último checkpoint (≤ 15 min atrás).

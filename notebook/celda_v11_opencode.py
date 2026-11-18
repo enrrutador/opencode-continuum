@@ -57,6 +57,11 @@ try:
         "OPENCODE_CLOUD_DATASET",
         "OPENCODE_SERVER_PASSWORD",
         "OPENCODE_SERVER_USERNAME",
+        "LOCAL_MODEL_BASE_URL",
+        "LOCAL_MODEL_ID",
+        "LOCAL_MODEL_PROVIDER",
+        "LOCAL_MODEL_PORT",
+        "LOCAL_MODEL_DEFAULT",
     ):
         try:
             val = usc.get_secret(key)
@@ -217,6 +222,28 @@ log("Link también en:", out)
 OPEN_CODE_URL = OPEN_URL
 OPEN_CODE_PROJECT_URL = PROJECT_URL
 WORKSTATION_RESULT = info
+
+
+# --- modelo local 9B (opcional, requiere GPU T4 x2 o LOCAL_MODEL_BASE_URL) ---
+# Sirve el modelo con vLLM, escribe el provider en el config real que lee
+# OpenCode (opencode/opencode.jsonc) y reinicia el proceso via watchdog.
+log("")
+from opencode_kaggle.local_model import current_tunnel_url, install_local_model
+
+
+modelo_listo = install_local_model(opencode_port=PORT)
+log(f"Modelo 9B disponible en /models: {modelo_listo}")
+
+# El watchdog también reinicia el túnel: refrescar link y archivo de salida.
+nueva_base = current_tunnel_url().rstrip("/")
+if nueva_base and nueva_base != base_url.rstrip("/"):
+    OPEN_URL = nueva_base + OPEN_URL[len(base_url):]
+    lineas = out.read_text(encoding="utf-8").splitlines()
+    if lineas:
+        lineas[0] = OPEN_URL
+    out.write_text("\n".join(lineas) + "\n", encoding="utf-8")
+    log("NUEVA URL tras reiniciar el modelo: " + OPEN_URL)
+    print(OPEN_URL, flush=True)
 
 
 # --- keep-alive ---

@@ -554,6 +554,53 @@ def test_write_opencode_config_incremental():
         assert "{env:NVIDIA_API_KEY}" in dumped
 
 
+def test_write_local_model_config_uses_opencode_jsonc():
+    from opencode_cloud.opencode import write_local_model_config
+    from opencode_cloud.runtime import get_paths, opencode_config_file
+
+    cfg = opencode_config_file(get_paths("kaggle"))
+    assert cfg == Path("/kaggle/working/opencode_cloud/xdg/config/opencode/opencode.jsonc")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "opencode" / "opencode.jsonc"
+        path.parent.mkdir()
+        path.write_text(
+            '{\n  // comment\n  "$schema": "https://opencode.ai/config.json",\n'
+            '  "provider": {"other": {"name": "Other"}},\n}',
+            encoding="utf-8",
+        )
+        write_local_model_config(
+            path,
+            provider_id="kaggle-deepseek",
+            name="DeepSeek 9B",
+            base_url="http://localhost:8000/",
+            models={"org/9b": "9B"},
+        )
+        data = json.loads(path.read_text(encoding="utf-8"))
+        provider = data["provider"]["kaggle-deepseek"]
+        assert provider["options"]["baseURL"] == "http://localhost:8000/v1"
+        assert provider["models"]["org/9b"]["name"] == "9B"
+        assert "other" in data["provider"]
+        assert data["$schema"] == "https://opencode.ai/config.json"
+
+
+def test_write_local_model_config_can_set_default():
+    from opencode_cloud.opencode import write_local_model_config
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "opencode.jsonc"
+        write_local_model_config(
+            path,
+            provider_id="local",
+            name="Local",
+            base_url="http://127.0.0.1:8000",
+            models={"org/9b": "9B"},
+            default_model_id="org/9b",
+        )
+        data = json.loads(path.read_text(encoding="utf-8"))
+        assert data["model"] == "local/org/9b"
+
+
 def test_runtime_paths_kaggle_layout():
     from opencode_cloud.runtime import get_paths
 
