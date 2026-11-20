@@ -1,12 +1,14 @@
 # ============================================================
 # OpenCode Continuum — celda v14: TODO + MODELO LOCAL 9B en UNA celda
 # Pegá esta celda en un notebook NUEVO de Kaggle y corréla.
-# Requiere Accelerator: GPU T4 x2 (para servir el 9B con vLLM).
+# Requiere Accelerator: GPU T4 (una sola alcanza: el 9B va en GGUF
+# con llama.cpp; T4 x2 solo hace falta con el motor vLLM de respaldo).
 # Sin GPU funciona igual si definís el secret LOCAL_MODEL_BASE_URL
 # apuntando a un servidor OpenAI-compatible ya corriendo.
 #
 # Qué hace: instala deps, clona el repo, restaura la workstation del
-# Dataset, levanta OpenCode + picker, sirve el 9B en localhost:8000,
+# Dataset, levanta OpenCode + picker, sirve el 9B GGUF (llama.cpp) en
+# localhost:8000,
 # inyecta el provider en el config REAL de OpenCode (opencode.jsonc),
 # reinicia el proceso, imprime los links y queda en keep-alive.
 #
@@ -15,11 +17,14 @@
 #   NVIDIA_API_KEY (opcional: modelos NVIDIA)
 #   OPENCODE_SERVER_PASSWORD (recomendado: basic auth)
 #   LOCAL_MODEL_ID / LOCAL_MODEL_PORT / LOCAL_MODEL_PROVIDER (opcionales)
+#   LOCAL_MODEL_ENGINE=llama|vllm, LOCAL_MODEL_GGUF_FILE (opcionales)
 #   LOCAL_MODEL_DEFAULT=1 (opcional: elegir el 9B por defecto)
 #   LOCAL_MODEL_BASE_URL (opcional: servidor externo en vez de vLLM)
 #
 # Cambios vs v13: modelo local seleccionable en /models y refresh del
-# link de la app tras el reinicio del watchdog.
+# link de la app tras el reinicio del watchdog. Motor por defecto:
+# llama.cpp con el GGUF Q4_K_M del heretic (antes vLLM, que queda como
+# respaldo con LOCAL_MODEL_ENGINE=vllm).
 # ============================================================
 import base64
 import json
