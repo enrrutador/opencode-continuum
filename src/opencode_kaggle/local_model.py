@@ -399,3 +399,84 @@ def install_local_model(*, opencode_port: int = 4096) -> bool:
     if not restart_opencode(opencode_port):
         return False
     return verify_model(provider_id, served_id)
+
+
+def _post_chat(port: int, payload: dict, timeout: int) -> dict:
+    import urllib.request
+
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}/v1/chat/completions",
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8", "replace"))
+
+
+def _server_log_tail(lines: int = 40) -> str:
+    for path in (LLAMA_LOG, VLLM_LOG):
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            if text:
+                return "\n".join(text[-lines:])
+        except Exception:
+            continue
+    return "(log del servidor no disponible)"
+
+
+def selftest_local_model() -> bool:
+    """Real inference probe against the local server, printed to the cell.
+
+    A plain short completion, then one with a tool definition (the shape
+    OpenCode actually sends). On any failure the server log tail is
+    printed too, so a single cell run shows where inference breaks.
+    """
+    port = int(os.environ.get("LOCAL_MODEL_PORT", "8000"))
+    alias = os.environ.get("LOCAL_MODEL_NAME", DEFAULT_MODEL_NAME)
+    log("auto-prueba de inferencia contra el servidor local...")
+    t = time.time()
+    try:
+        r = _post_chat(port, {
+            "model": alias,
+            "messages": [{"role": "user", "content": "Decí 'hola' y nada más."}],
+            "max_tokens": 80,
+        }, timeout=240)
+    except Exception as e:
+        log(f"AUTO-PRUEBA FALLÓ tras {time.time() - t:.0f}s: {type(e).__name__}: {e}")
+        log("--- cola del log del servidor ---")
+        print(_server_log_tail(), flush=True)
+        return False
+    ch = (r.get("choices") or [{}])[0]
+    msg = ch.get("message") or {}
+    reasoning = msg.get("reasoning_content") or ""
+    log(f"auto-prueba OK en {time.time() - t:.0f}s — finish={ch.get('finish_reason')} "
+        f"usage={r.get('usage')}")
+    log(f"respuesta: {(msg.get('content') or '')[:200]!r} "
+        f"(razonamiento: {len(reasoning)} caracteres)")
+    t = time.time()
+    try:
+        r = _post_chat(port, {
+            "model": alias,
+            "messages": [{"role": "user", "content": "¿Qué hora es? Usá la herramienta."}],
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "hora_actual",
+                    "description": "Devuelve la hora actual",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }],
+            "max_tokens": 200,
+        }, timeout=240)
+    except Exception as e:
+        log(f"prueba con herramientas FALLÓ tras {time.time() - t:.0f}s: "
+            f"{type(e).__name__}: {e}")
+        log("--- cola del log del servidor ---")
+        print(_server_log_tail(), flush=True)
+        return False
+    ch = (r.get("choices") or [{}])[0]
+    msg = ch.get("message") or {}
+    log(f"herramientas OK en {time.time() - t:.0f}s — finish={ch.get('finish_reason')} "
+        f"tool_calls={bool(msg.get('tool_calls'))}")
+    log(f"detalle: {json.dumps(msg)[:300]}")
+    return True
