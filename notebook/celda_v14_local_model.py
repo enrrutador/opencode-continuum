@@ -7,9 +7,9 @@
 # apuntando a un servidor OpenAI-compatible ya corriendo.
 #
 # Qué hace: instala deps, clona el repo, restaura la workstation del
-# Dataset, levanta OpenCode + picker, sirve el 9B GGUF (llama.cpp) en
-# localhost:8000,
-# inyecta el provider en el config REAL de OpenCode (opencode.jsonc),
+# Dataset, levanta OpenCode + picker, sirve el 9B GGUF (llama.cpp)
+# en localhost:8000, inyecta el provider en el config REAL de
+# OpenCode (opencode.jsonc),
 # reinicia el proceso, imprime los links y queda en keep-alive.
 #
 # Secrets (Add-ons → Attach):
@@ -263,7 +263,7 @@ OPEN_CODE_URL = OPEN_URL
 WORKSTATION_RESULT = info
 
 
-# --- MODELO LOCAL 9B: vLLM + provider en opencode.jsonc + reinicio ---
+# --- MODELO LOCAL 9B: llama.cpp/vLLM + provider en opencode.jsonc + reinicio ---
 log("")
 log("[modelo local] arrancando integración del 9B...")
 from opencode_kaggle.local_model import current_tunnel_url, install_local_model
