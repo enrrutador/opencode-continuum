@@ -29,10 +29,12 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
 import tarfile
+import tempfile
 import time
 import urllib.request
 from pathlib import Path
@@ -124,23 +126,64 @@ def download(url: str, dest: Path, timeout: int = 1800) -> Path:
     return dest
 
 
-def ensure_gguf(repo: str, filename: str) -> Path:
-    """Download the GGUF once per session (Kaggle disk is ephemeral)."""
-    dest = MODELS_DIR / filename
-    if dest.exists() and dest.stat().st_size > 1_000_000_000:
-        log(f"GGUF ya descargado: {dest.name}")
-        return dest
-    try:
-        from huggingface_hub import hf_hub_download
+def _gguf_dirs() -> list:
+    dirs = [Path(tempfile.gettempdir()) / "opencode_models"]
+    kt = Path("/kaggle/temp")
+    if kt.exists():
+        dirs.append(kt / "opencode_models")
+    dirs.append(MODELS_DIR)
+    return dirs
 
-        log(f"descargando GGUF {repo}/{filename} ...")
-        path = hf_hub_download(repo_id=repo, filename=filename, local_dir=str(MODELS_DIR))
-        return Path(path)
+
+def _remote_size(url: str) -> int:
+    try:
+        req = urllib.request.Request(url, method="HEAD")
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return int(resp.headers.get("Content-Length") or 0)
+    except Exception:
+        return 0
+
+
+def ensure_gguf(repo: str, filename: str) -> Path:
+    url = f"https://huggingface.co/{repo}/resolve/main/{filename}"
+    expected = _remote_size(url)
+    # Reuse a complete copy wherever it already is.
+    for d in _gguf_dirs():
+        p = d / filename
+        if p.exists():
+            size = p.stat().st_size
+            if size > 1_000_000_000 and (not expected or size == expected):
+                log(f"GGUF ya descargado en {d} ({size / 1e9:.1f} GB)")
+                return p
+    # The persistent Kaggle disk is ~20 GB and a big GGUF does not fit next
+    # to the workspace: prefer a session disk with real headroom. The model
+    # was never part of the checkpoints, so nothing is lost by this.
+    need = (expected or 18_600_000_000) + 2_500_000_000
+    target = None
+    for d in _gguf_dirs():
+        probe = d
+        while not probe.exists() and probe.parent != probe:
+            probe = probe.parent
+        free = shutil.disk_usage(probe).free
+        log(f"espacio libre para el GGUF en {d}: {free / 1e9:.1f} GB")
+        if free >= need:
+            target = d
+            break
+    if target is None:
+        target = MODELS_DIR
+    target.mkdir(parents=True, exist_ok=True)
+    for old in target.glob("*.gguf"):
+        old.unlink(missing_ok=True)
+    shutil.rmtree(target / ".cache", ignore_errors=True)
+    dest = target / filename
+    log(f"descargando GGUF {repo}/{filename} en {target} ...")
+    try:
+        return download(url, dest)
     except Exception as exc:
-        log(f"huggingface_hub falló ({type(exc).__name__}); bajo con curl...")
-        return download(
-            f"https://huggingface.co/{repo}/resolve/main/{filename}", dest
-        )
+        log(f"la descarga directa falló ({type(exc).__name__}); pruebo huggingface_hub...")
+        dest.unlink(missing_ok=True)
+        path = hf_hub_download(repo_id=repo, filename=filename, local_dir=str(target))
+        return Path(path)
 
 
 def ensure_llama_server() -> tuple[Path, dict]:
@@ -158,6 +201,7 @@ def ensure_llama_server() -> tuple[Path, dict]:
         LLAMA_DIR.mkdir(parents=True, exist_ok=True)
         with tarfile.open(tarball) as tf:
             tf.extractall(LLAMA_DIR)
+        tarball.unlink(missing_ok=True)
         found = [p for p in sorted(LLAMA_DIR.rglob("llama-server")) if p.is_file()]
         if not found:
             raise RuntimeError("el paquete de llama.cpp no trajo llama-server")
@@ -182,6 +226,7 @@ def ensure_llama_server() -> tuple[Path, dict]:
         tarball = download(url, LLAMA_DIR / "cudart.tar.gz")
         with tarfile.open(tarball) as tf:
             tf.extractall(LLAMA_DIR)
+        tarball.unlink(missing_ok=True)
         cudart_libs = [str(p.parent) for p in sorted(LLAMA_DIR.rglob("libcudart.so*"))]
     if cudart_libs:
         lib_dirs.insert(0, cudart_libs[0])
