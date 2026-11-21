@@ -39,10 +39,10 @@ import time
 import urllib.request
 from pathlib import Path
 
-DEFAULT_MODEL_ID = "huihui-ai/Huihui-Qwen3-30B-A3B-Instruct-2507-abliterated"
-DEFAULT_GGUF_REPO = "mradermacher/Huihui-Qwen3-30B-A3B-Instruct-2507-abliterated-GGUF"
-DEFAULT_GGUF_FILE = "Huihui-Qwen3-30B-A3B-Instruct-2507-abliterated.Q4_K_M.gguf"
-DEFAULT_MODEL_NAME = "qwen3-30b-a3b-abliterated"
+DEFAULT_MODEL_ID = "huihui-ai/Qwen3-32B-abliterated"
+DEFAULT_GGUF_REPO = "mradermacher/Qwen3-32B-abliterated-GGUF"
+DEFAULT_GGUF_FILE = "Qwen3-32B-abliterated.Q4_K_M.gguf"
+DEFAULT_MODEL_NAME = "qwen3-32b-abliterated"
 DEFAULT_PROVIDER_ID = "kaggle-deepseek"
 DEFAULT_LLAMA_BUILD = "b12565"
 LLAMA_CUDA = "12.8"
@@ -315,6 +315,11 @@ def ensure_llama_model(port: int) -> tuple[str, str]:
             "este modelo necesita T4 x2")
     if split:
         log(f"GGUF de {size_gb:.1f} GB: se parte entre las 2 GPU (split por capas)")
+    if split and size_gb > 17 and ctx > 16384:
+        # Dense 32B: weights ~9.9 GB/card + full 32k KV cache would not fit
+        # a 15 GB T4; 16k context keeps both cards comfortably inside.
+        ctx = 16384
+        log("contexto ajustado a 16384 para que el modelo y su caché entren en las 2 T4")
     LLAMA_LOG.parent.mkdir(parents=True, exist_ok=True)
     for attempt_ctx in (ctx, 8192):
         cmd = llama_server_cmd(server, model_path, port, alias, attempt_ctx, split=split)
@@ -481,9 +486,9 @@ def install_local_model(*, opencode_port: int = 4096) -> bool:
     write_local_model_config(
         cfg_path,
         provider_id=provider_id,
-        name="Qwen3-30B-A3B (local)",
+        name="Qwen3-32B (local)",
         base_url=base_url,
-        models={served_id: "Qwen3-30B-A3B abliterated"},
+        models={served_id: "Qwen3-32B abliterated"},
         default_model_id=served_id if os.environ.get("LOCAL_MODEL_DEFAULT") == "1" else None,
     )
     log(f"provider {provider_id} -> {base_url}/v1 en {cfg_path}")
