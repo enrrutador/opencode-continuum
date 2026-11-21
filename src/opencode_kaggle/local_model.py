@@ -37,10 +37,10 @@ import time
 import urllib.request
 from pathlib import Path
 
-DEFAULT_MODEL_ID = "xtools-at/DeepSeek-V4-Pro-Qwen3.5-9B-UNCENSORED-heretic"
-DEFAULT_GGUF_REPO = "mradermacher/DeepSeek-V4-Pro-Qwen3.5-9B-UNCENSORED-heretic-GGUF"
-DEFAULT_GGUF_FILE = "DeepSeek-V4-Pro-Qwen3.5-9B-UNCENSORED-heretic.Q4_K_M.gguf"
-DEFAULT_MODEL_NAME = "deepseek-v4-pro-9b-heretic"
+DEFAULT_MODEL_ID = "huihui-ai/Huihui-Qwen3-30B-A3B-Instruct-2507-abliterated"
+DEFAULT_GGUF_REPO = "mradermacher/Huihui-Qwen3-30B-A3B-Instruct-2507-abliterated-GGUF"
+DEFAULT_GGUF_FILE = "Huihui-Qwen3-30B-A3B-Instruct-2507-abliterated.Q4_K_M.gguf"
+DEFAULT_MODEL_NAME = "qwen3-30b-a3b-abliterated"
 DEFAULT_PROVIDER_ID = "kaggle-deepseek"
 DEFAULT_LLAMA_BUILD = "b12565"
 LLAMA_CUDA = "12.8"
@@ -207,8 +207,9 @@ def ensure_llama_server() -> tuple[Path, dict]:
     return server, env
 
 
-def llama_server_cmd(server: Path, model_path: Path, port: int, alias: str, ctx: int) -> list:
-    return [
+def llama_server_cmd(server: Path, model_path: Path, port: int, alias: str, ctx: int,
+                     split: bool = False) -> list:
+    cmd = [
         str(server),
         "-m",
         str(model_path),
@@ -226,6 +227,10 @@ def llama_server_cmd(server: Path, model_path: Path, port: int, alias: str, ctx:
         alias,
         "--jinja",
     ]
+    if split:
+        # Model bigger than one GPU: layer-split it evenly across both.
+        cmd += ["-sm", "layer", "--tensor-split", "1,1"]
+    return cmd
 
 
 def _report_gpu_offload() -> None:
@@ -256,9 +261,18 @@ def ensure_llama_model(port: int) -> tuple[str, str]:
     ctx = int(os.environ.get("LOCAL_MODEL_CTX", "32768"))
     model_path = ensure_gguf(repo, filename)
     server, env = ensure_llama_server()
+    size_gb = model_path.stat().st_size / 1e9
+    split = size_gb > 13 and gpu_count() >= 2
+    if os.environ.get("LOCAL_MODEL_SPLIT") == "1":
+        split = gpu_count() >= 2
+    if size_gb > 13 and not split:
+        log(f"AVISO: el GGUF pesa {size_gb:.1f} GB y no entra en una sola GPU; "
+            "este modelo necesita T4 x2")
+    if split:
+        log(f"GGUF de {size_gb:.1f} GB: se parte entre las 2 GPU (split por capas)")
     LLAMA_LOG.parent.mkdir(parents=True, exist_ok=True)
     for attempt_ctx in (ctx, 8192):
-        cmd = llama_server_cmd(server, model_path, port, alias, attempt_ctx)
+        cmd = llama_server_cmd(server, model_path, port, alias, attempt_ctx, split=split)
         log("arrancando llama-server: " + " ".join(cmd))
         handle = LLAMA_LOG.open("a", encoding="utf-8")
         proc = subprocess.Popen(
@@ -422,9 +436,9 @@ def install_local_model(*, opencode_port: int = 4096) -> bool:
     write_local_model_config(
         cfg_path,
         provider_id=provider_id,
-        name="DeepSeek-V4-Pro 9B (local)",
+        name="Qwen3-30B-A3B (local)",
         base_url=base_url,
-        models={served_id: "DeepSeek-V4-Pro 9B (heretic)"},
+        models={served_id: "Qwen3-30B-A3B abliterated"},
         default_model_id=served_id if os.environ.get("LOCAL_MODEL_DEFAULT") == "1" else None,
     )
     log(f"provider {provider_id} -> {base_url}/v1 en {cfg_path}")
