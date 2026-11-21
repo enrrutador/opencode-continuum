@@ -164,16 +164,17 @@ def ensure_llama_server() -> tuple[Path, dict]:
         found[0].chmod(0o755)
     server = found[0]
     env = dict(os.environ)
-    libs = [str(p.parent) for p in sorted(LLAMA_DIR.rglob("libggml-cuda.so*"))]
-    if libs:
-        env["LD_LIBRARY_PATH"] = libs[0] + os.pathsep + env.get("LD_LIBRARY_PATH", "")
-    # Smoke test: if the binary cannot start (missing CUDA runtime libs),
-    # fetch the matching cudart package and put its libs on the path.
-    probe = subprocess.run(
-        [str(server), "--version"], capture_output=True, text=True, env=env, timeout=60
-    )
-    if probe.returncode != 0:
-        log("faltan librerías CUDA: descargo el paquete cudart de llama.cpp...")
+    lib_dirs = []
+    llama_libs = [str(p.parent) for p in sorted(LLAMA_DIR.rglob("libggml-cuda.so*"))]
+    if llama_libs:
+        lib_dirs.append(llama_libs[0])
+    # The CUDA build NEVER bundles the CUDA runtime: without the separate
+    # cudart package, libggml-cuda.so cannot load and llama-server silently
+    # serves on CPU (health OK, completions work, at CPU speed). Always
+    # fetch cudart and put it FIRST on the loader path.
+    cudart_libs = [str(p.parent) for p in sorted(LLAMA_DIR.rglob("libcudart.so*"))]
+    if not cudart_libs:
+        log("descargando librerías CUDA (paquete cudart de llama.cpp)...")
         url = (
             "https://github.com/ggml-org/llama.cpp/releases/download/"
             f"{build}/cudart-llama-{build}-bin-ubuntu-cuda-{LLAMA_CUDA}-x64.tar.gz"
@@ -181,15 +182,28 @@ def ensure_llama_server() -> tuple[Path, dict]:
         tarball = download(url, LLAMA_DIR / "cudart.tar.gz")
         with tarfile.open(tarball) as tf:
             tf.extractall(LLAMA_DIR)
-        cudart = [str(p.parent) for p in sorted(LLAMA_DIR.rglob("libcudart.so*"))]
-        if cudart:
-            env["LD_LIBRARY_PATH"] = cudart[0] + os.pathsep + env.get("LD_LIBRARY_PATH", "")
-        probe = subprocess.run(
-            [str(server), "--version"], capture_output=True, text=True, env=env, timeout=60
+        cudart_libs = [str(p.parent) for p in sorted(LLAMA_DIR.rglob("libcudart.so*"))]
+    if cudart_libs:
+        lib_dirs.insert(0, cudart_libs[0])
+    if lib_dirs:
+        env["LD_LIBRARY_PATH"] = (
+            os.pathsep.join(lib_dirs) + os.pathsep + env.get("LD_LIBRARY_PATH", "")
         )
-        if probe.returncode != 0:
-            raise RuntimeError("llama-server no arranca: " + (probe.stderr or "")[-300:])
-    log("llama-server: " + (probe.stdout or probe.stderr).strip().splitlines()[0])
+    probe = subprocess.run(
+        [str(server), "--version"], capture_output=True, text=True, env=env, timeout=60
+    )
+    if probe.returncode != 0:
+        raise RuntimeError("llama-server no arranca: " + (probe.stderr or "")[-300:])
+    probe_text = (probe.stdout or "") + (probe.stderr or "")
+    log("llama-server: " + probe_text.strip().splitlines()[-1])
+    cuda_lines = [
+        ln for ln in probe_text.splitlines()
+        if "ggml_cuda_init" in ln or "CUDA devices" in ln
+    ]
+    if cuda_lines:
+        log("GPU CUDA detectada al arrancar: " + cuda_lines[0].strip())
+    else:
+        log("AVISO: el binario no reportó GPU CUDA; se verifica al cargar el modelo")
     return server, env
 
 
@@ -214,6 +228,23 @@ def llama_server_cmd(server: Path, model_path: Path, port: int, alias: str, ctx:
     ]
 
 
+def _report_gpu_offload() -> None:
+    """Print whether the model actually landed on the GPU (log evidence)."""
+    try:
+        lines = LLAMA_LOG.read_text(encoding="utf-8", errors="replace").splitlines()
+    except Exception:
+        return
+    offload = [ln for ln in lines if "offloaded" in ln and "layers" in ln]
+    cuda = [ln for ln in lines if "ggml_cuda_init" in ln]
+    if offload:
+        log("GPU: " + offload[-1].strip())
+    if cuda:
+        log("GPU: " + cuda[-1].strip())
+    if not offload and not cuda:
+        log("GPU NO confirmada en el log: el modelo puede estar en CPU (lento).")
+        log("--- últimas líneas del log del servidor ---")
+        print("\n".join(lines[-15:]), flush=True)
+
 def ensure_llama_model(port: int) -> tuple[str, str]:
     """Serve the GGUF with llama-server. Returns (base_url, served_model_id)."""
     if not gpu_count():
@@ -235,6 +266,7 @@ def ensure_llama_model(port: int) -> tuple[str, str]:
         )
         if wait_server(proc, port, 900, LLAMA_LOG):
             log(f"API del modelo lista en puerto {port} (ctx {attempt_ctx})")
+            _report_gpu_offload()
             return f"http://127.0.0.1:{port}", alias
         if attempt_ctx == ctx and ctx != 8192:
             log("reintentando con contexto 8192...")
@@ -454,6 +486,10 @@ def selftest_local_model() -> bool:
         f"usage={r.get('usage')}")
     log(f"respuesta: {(msg.get('content') or '')[:200]!r} "
         f"(razonamiento: {len(reasoning)} caracteres)")
+    tim = r.get("timings") or {}
+    if tim:
+        log(f"velocidad: {tim.get('predicted_per_second', 0):.1f} tok/s generando, "
+            f"{tim.get('prompt_per_second', 0):.1f} tok/s de prompt")
     t = time.time()
     try:
         r = _post_chat(port, {
@@ -479,5 +515,9 @@ def selftest_local_model() -> bool:
     msg = ch.get("message") or {}
     log(f"herramientas OK en {time.time() - t:.0f}s — finish={ch.get('finish_reason')} "
         f"tool_calls={bool(msg.get('tool_calls'))}")
+    tim = r.get("timings") or {}
+    if tim:
+        log(f"velocidad: {tim.get('predicted_per_second', 0):.1f} tok/s generando, "
+            f"{tim.get('prompt_per_second', 0):.1f} tok/s de prompt")
     log(f"detalle: {json.dumps(msg)[:300]}")
     return True
