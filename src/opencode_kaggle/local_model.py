@@ -39,10 +39,10 @@ import time
 import urllib.request
 from pathlib import Path
 
-DEFAULT_MODEL_ID = "huihui-ai/Qwen3-32B-abliterated"
-DEFAULT_GGUF_REPO = "mradermacher/Qwen3-32B-abliterated-GGUF"
-DEFAULT_GGUF_FILE = "Qwen3-32B-abliterated.Q4_K_M.gguf"
-DEFAULT_MODEL_NAME = "qwen3-32b-abliterated"
+DEFAULT_MODEL_ID = "huihui-ai/Qwen2.5-32B-Instruct-abliterated-SFT"
+DEFAULT_GGUF_REPO = "mradermacher/Qwen2.5-32B-Instruct-abliterated-SFT-GGUF"
+DEFAULT_GGUF_FILE = "Qwen2.5-32B-Instruct-abliterated-SFT.Q4_K_M.gguf"
+DEFAULT_MODEL_NAME = "qwen2.5-32b-abliterated-sft"
 DEFAULT_PROVIDER_ID = "kaggle-deepseek"
 DEFAULT_LLAMA_BUILD = "b12565"
 LLAMA_CUDA = "12.8"
@@ -486,9 +486,9 @@ def install_local_model(*, opencode_port: int = 4096) -> bool:
     write_local_model_config(
         cfg_path,
         provider_id=provider_id,
-        name="Qwen3-32B (local)",
+        name="Qwen2.5-32B SFT (local)",
         base_url=base_url,
-        models={served_id: "Qwen3-32B abliterated"},
+        models={served_id: "Qwen2.5-32B abliterated SFT"},
         default_model_id=served_id if os.environ.get("LOCAL_MODEL_DEFAULT") == "1" else None,
     )
     log(f"provider {provider_id} -> {base_url}/v1 en {cfg_path}")
